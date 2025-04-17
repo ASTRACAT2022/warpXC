@@ -1,2 +1,1 @@
-# warpgen
-Генератор конфигов warp 
+# warpbot
