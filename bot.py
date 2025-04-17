@@ -225,6 +225,9 @@ def init_default_templates():
                        VALUES (?, ?, ?, ?)''',
                        (template['name'], json.dumps(template['template_data']), datetime.now().isoformat(), template['enabled']))
     conn.commit()
+    cursor.execute('SELECT COUNT(*) FROM config_templates')
+    count = cursor.fetchone()[0]
+    logger.info(f"Initialized {count} config templates")
 
 init_default_templates()
 
@@ -301,7 +304,9 @@ def get_user(user_id: int):
 
 def get_config_templates():
     cursor.execute('SELECT name, template_data, enabled FROM config_templates WHERE enabled = 1')
-    return [(row[0], json.loads(row[1])) for row in cursor.fetchall()]
+    templates = [(row[0], json.loads(row[1])) for row in cursor.fetchall()]
+    logger.info(f"Retrieved {len(templates)} config templates")
+    return templates
 
 def add_config_template(name: str, template_data: dict, enabled: bool = True):
     cursor.execute('''INSERT INTO config_templates 
@@ -421,6 +426,7 @@ def get_users_paginated(page: int = 0, filter_type: str = 'all', sort_by: str = 
     cursor.execute(count_query, count_params)
     total_users = cursor.fetchone()[0]
     
+    logger.info(f"Retrieved {len(users)} users for page {page}, filter: {filter_type}, sort: {sort_by}")
     return users, total_users
 
 def export_users_to_csv():
@@ -436,31 +442,44 @@ def export_users_to_csv():
         writer.writerow(user)
     
     output.seek(0)
+    logger.info("Generated CSV export for users")
     return output
 
 # Генерация конфигов
 def generate_config(config_type: str, dns: str) -> str:
+    logger.info(f"Generating config for type: {config_type}, DNS: {dns}")
     template = get_config_template(config_type)
     if not template:
+        logger.error(f"Template not found for config_type: {config_type}")
         return ""
     
-    config = []
-    config.append("[Interface]")
-    config.append(f"PrivateKey = {template['PrivateKey']}")
+    if 'DNS' not in template or dns not in template['DNS']:
+        logger.error(f"Invalid DNS configuration for {config_type}: {dns}")
+        return ""
     
-    if 'extra_params' in template and template['extra_params']:
-        for param, value in template['extra_params'].items():
-            config.append(f"{param} = {value}")
-    
-    config.append(f"Address = {template['Address']}")
-    config.append(f"DNS = {template['DNS'][dns]}")
-    
-    config.append("\n[Peer]")
-    config.append(f"PublicKey = {template['PublicKey']}")
-    config.append("AllowedIPs = 0.0.0.0/0, ::/0")
-    config.append(f"Endpoint = {template['Endpoint']}")
-    
-    return "\n".join(config)
+    try:
+        config = []
+        config.append("[Interface]")
+        config.append(f"PrivateKey = {template['PrivateKey']}")
+        
+        if 'extra_params' in template and template['extra_params']:
+            for param, value in template['extra_params'].items():
+                config.append(f"{param} = {value}")
+        
+        config.append(f"Address = {template['Address']}")
+        config.append(f"DNS = {template['DNS'][dns]}")
+        
+        config.append("\n[Peer]")
+        config.append(f"PublicKey = {template['PublicKey']}")
+        config.append("AllowedIPs = 0.0.0.0/0, ::/0")
+        config.append(f"Endpoint = {template['Endpoint']}")
+        
+        config_str = "\n".join(config)
+        logger.info(f"Config generated successfully for {config_type}")
+        return config_str
+    except Exception as e:
+        logger.error(f"Error generating config for {config_type}: {str(e)}")
+        return ""
 
 # Локализация
 def get_text(key: str, language: str) -> str:
@@ -748,27 +767,41 @@ async def handle_dns_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     language = user[5] or 'ru'
     await query.answer()
     dns_type = query.data
-    config_type = context.user_data['config_type']
+    config_type = context.user_data.get('config_type')
+    
+    logger.info(f"Handling DNS choice: user={user_id}, config_type={config_type}, dns={dns_type}")
+    
+    if not config_type:
+        logger.error(f"No config_type in user_data for user {user_id}")
+        await query.edit_message_text("⛔ Ошибка: тип конфигурации не выбран")
+        return ConversationHandler.END
     
     config_content = generate_config(config_type, dns_type)
     if not config_content:
-        await query.edit_message_text("⛔ Ошибка: шаблон конфигурации не найден")
+        logger.error(f"Failed to generate config for user {user_id}, type {config_type}, dns {dns_type}")
+        await query.edit_message_text("⛔ Ошибка: не удалось сгенерировать конфигурацию")
         return ConversationHandler.END
     
-    filename = "astrawarpbot.conf" if config_type == "AstraWarpBot" else f"{config_type}_{dns_type}.conf"
+    try:
+        filename = "astrawarpbot.conf" if config_type == "AstraWarpBot" else f"{config_type}_{dns_type}.conf"
+        
+        save_config(user_id, config_content, config_type)
+        update_dns_stats(dns_type)
+        log_activity(user_id, f"config_created_{config_type}_{dns_type}")
+        
+        await context.bot.send_document(
+            chat_id=query.message.chat_id,
+            document=io.BytesIO(config_content.encode('utf-8')),
+            filename=filename,
+            caption=f"Ваш {config_type} конфиг"
+        )
+        
+        await query.edit_message_text(get_text("config_created", language))
+        logger.info(f"Config sent to user {user_id}: {filename}")
+    except Exception as e:
+        logger.error(f"Error sending config to user {user_id}: {str(e)}")
+        await query.edit_message_text(f"⛔ Ошибка при отправке конфигурации: {str(e)}")
     
-    save_config(user_id, config_content, config_type)
-    update_dns_stats(dns_type)
-    log_activity(user_id, f"config_created_{config_type}_{dns_type}")
-    
-    await context.bot.send_document(
-        chat_id=query.message.chat_id,
-        document=config_content.encode('utf-8'),
-        filename=filename,
-        caption=f"Ваш {config_type} конфиг"
-    )
-    
-    await query.edit_message_text(get_text("config_created", language))
     return ConversationHandler.END
 
 async def show_configs(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -843,7 +876,7 @@ async def config_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         filename = "astrawarpbot.conf" if config_type == "AstraWarpBot" else f"warp_{config_type}_{config_id}.conf"
         await context.bot.send_document(
             chat_id=query.message.chat_id,
-            document=content.encode('utf-8'),
+            document=io.BytesIO(content.encode('utf-8')),
             filename=filename
         )
     
@@ -1403,7 +1436,10 @@ async def process_admin_settings(update: Update, context: ContextTypes.DEFAULT_T
                 raise ValueError("Значение должно быть неотрицательным")
         update_setting(setting_key, value)
         log_admin_action(user_id, "update_setting", f"Updated {setting_key} to {value}")
-        await update.message.reply_text(f"✅ Настройка '{setting_key}' обновлена!", reply_markup=main_kb('ru'))
+        await update.message.reply_text(
+            f"✅ Настройка {setting_key} обновлена: {value}",
+            reply_markup=main_kb('ru')
+        )
     except Exception as e:
         await update.message.reply_text(f"⛔ Ошибка: {str(e)}")
     
@@ -1414,24 +1450,9 @@ async def add_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id != ADMIN_ID:
         await update.message.reply_text("⛔ Доступ запрещён!")
         return
+    
     await update.message.reply_text(
-        "Введите данные для нового типа конфигурации в формате JSON:\n"
-        "{\n"
-        '  "name": "ConfigName",\n'
-        '  "template_data": {\n'
-        '    "PrivateKey": "key",\n'
-        '    "PublicKey": "key",\n'
-        '    "Address": "ip",\n'
-        '    "Endpoint": "endpoint",\n'
-        '    "DNS": {\n'
-        '      "cloudflare": "dns",\n'
-        '      "google": "dns",\n'
-        '      "adguard": "dns"\n'
-        '    },\n'
-        '    "extra_params": {}\n'
-        '  },\n'
-        '  "enabled": true\n'
-        "}"
+        "Введите название нового типа конфигурации:"
     )
     return ADD_CONFIG
 
@@ -1441,26 +1462,28 @@ async def process_add_config(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text("⛔ Доступ запрещён!")
         return ConversationHandler.END
     
+    config_name = update.message.text
+    context.user_data['new_config_name'] = config_name
+    await update.message.reply_text(
+        "Введите JSON с данными шаблона конфигурации:"
+    )
+    return ADD_CONFIG
+
+async def finalize_add_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Доступ запрещён!")
+        return ConversationHandler.END
+    
+    config_name = context.user_data.get('new_config_name')
     try:
-        config_data = json.loads(update.message.text)
-        name = config_data['name']
-        template_data = config_data['template_data']
-        enabled = config_data.get('enabled', True)
-        
-        required_fields = ['PrivateKey', 'PublicKey', 'Address', 'Endpoint', 'DNS']
-        for field in required_fields:
-            if field not in template_data:
-                await update.message.reply_text(f"⛔ Ошибка: отсутствует поле {field}")
-                return ConversationHandler.END
-        if not isinstance(template_data['DNS'], dict) or not all(k in template_data['DNS'] for k in ['cloudflare', 'google', 'adguard']):
-            await update.message.reply_text("⛔ Ошибка: неверный формат DNS")
-            return ConversationHandler.END
-        
-        add_config_template(name, template_data, enabled)
-        log_admin_action(user_id, "add_config", f"Added config type {name}")
-        await update.message.reply_text(f"✅ Тип конфигурации '{name}' успешно добавлен!", reply_markup=main_kb('ru'))
-    except json.JSONDecodeError:
-        await update.message.reply_text("⛔ Ошибка: неверный формат JSON")
+        template_data = json.loads(update.message.text)
+        add_config_template(config_name, template_data)
+        log_admin_action(user_id, "add_config", f"Added config {config_name}")
+        await update.message.reply_text(
+            f"✅ Тип конфигурации {config_name} добавлен",
+            reply_markup=main_kb('ru')
+        )
     except Exception as e:
         await update.message.reply_text(f"⛔ Ошибка: {str(e)}")
     
@@ -1472,22 +1495,19 @@ async def edit_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("⛔ Доступ запрещён!")
         return
     
-    cursor.execute('SELECT name FROM config_templates')
-    templates = [row[0] for row in cursor.fetchall()]
-    if not templates:
-        await update.message.reply_text("⛔ Нет доступных типов конфигураций")
-        return
-    
+    templates = get_config_templates()
     keyboard = [
         [InlineKeyboardButton(name, callback_data=f"edit_{name}")]
-        for name in templates
+        for name, _ in templates
     ]
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data='back_main')])
     await update.message.reply_text(
         "Выберите тип конфигурации для редактирования:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
+    return EDIT_CONFIG
 
-async def process_edit_config_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_edit_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     user_id = query.from_user.id
     if user_id != ADMIN_ID:
@@ -1495,136 +1515,154 @@ async def process_edit_config_type(update: Update, context: ContextTypes.DEFAULT
         return ConversationHandler.END
     
     await query.answer()
-    config_type = query.data.split('_')[1]
-    context.user_data['edit_config_type'] = config_type
-    
-    template = get_config_template(config_type)
+    config_name = query.data.split('_')[1]
+    context.user_data['edit_config_name'] = config_name
     await query.edit_message_text(
-        f"Текущие данные для '{config_type}':\n"
-        f"{json.dumps(template, indent=2)}\n\n"
-        "Введите новые данные в формате JSON:"
+        f"Введите новый JSON для шаблона {config_name}:"
     )
     return EDIT_CONFIG
 
-async def process_edit_config_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def finalize_edit_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if user_id != ADMIN_ID:
         await update.message.reply_text("⛔ Доступ запрещён!")
         return ConversationHandler.END
     
+    config_name = context.user_data.get('edit_config_name')
     try:
-        config_data = json.loads(update.message.text)
-        name = context.user_data['edit_config_type']
-        enabled = config_data.get('enabled', True)
-        
-        required_fields = ['PrivateKey', 'PublicKey', 'Address', 'Endpoint', 'DNS']
-        for field in required_fields:
-            if field not in config_data:
-                await update.message.reply_text(f"⛔ Ошибка: отсутствует поле {field}")
-                return ConversationHandler_END
-        if not isinstance(config_data['DNS'], dict) or not all(k in config_data['DNS'] for k in ['cloudflare', 'google', 'adguard']):
-            await update.message.reply_text("⛔ Ошибка: неверный формат DNS")
-            return ConversationHandler_END
-        
-        update_config_template(name, config_data, enabled)
-        log_admin_action(user_id, "edit_config", f"Edited config type {name}")
-        await update.message.reply_text(f"✅ Тип конфигурации '{name}' успешно обновлен!", reply_markup=main_kb('ru'))
-    except json.JSONDecodeError:
-        await update.message.reply_text("⛔ Ошибка: неверный формат JSON")
+        template_data = json.loads(update.message.text)
+        update_config_template(config_name, template_data)
+        log_admin_action(user_id, "edit_config", f"Edited config {config_name}")
+        await update.message.reply_text(
+            f"✅ Тип конфигурации {config_name} обновлён",
+            reply_markup=main_kb('ru')
+        )
     except Exception as e:
         await update.message.reply_text(f"⛔ Ошибка: {str(e)}")
     
-    return ConversationHandler_END
+    return ConversationHandler.END
 
-# Запуск
-def main():
-    app = Application.builder().token(TOKEN).build()
+async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    user = get_user(user_id)
+    language = user[5] if user else 'ru'
     
-    conv_handler = ConversationHandler(
-        entry_points=[
-            CommandHandler("start", start),
-            MessageHandler(filters.Regex(r"🔄 Новый конфиг|New config"), new_config)
-        ],
+    await query.answer()
+    await query.edit_message_text(
+        "🔙 Вернулись в главное меню",
+        reply_markup=main_kb(language)
+    )
+    return ConversationHandler.END
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    user = get_user(user_id)
+    language = user[5] if user else 'ru'
+    
+    await update.message.reply_text(
+        "🚫 Действие отменено",
+        reply_markup=main_kb(language)
+    )
+    return ConversationHandler.END
+
+def main():
+    application = Application.builder().token(TOKEN).build()
+    
+    # ConversationHandler для создания конфигурации
+    config_conv = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^(🔄 Новый конфиг|New config)$"), new_config)],
         states={
             CONFIG_TYPE: [CallbackQueryHandler(handle_config_type)],
-            DNS_CHOICE: [CallbackQueryHandler(handle_dns_choice, pattern=r"^(cloudflare|google|adguard)$")]
+            DNS_CHOICE: [CallbackQueryHandler(handle_dns_choice)]
         },
-        fallbacks=[]
+        fallbacks=[CallbackQueryHandler(back_to_main, pattern='^back_main$'),
+                   CommandHandler("cancel", cancel)]
     )
     
-    app.add_handler(conv_handler)
-    app.add_handler(MessageHandler(filters.Regex(r"📁 Мои конфиги|My configs"), show_configs))
-    app.add_handler(MessageHandler(filters.Regex(r"⚙️ Настройки|Settings"), settings))
-    app.add_handler(MessageHandler(filters.Regex(r"ℹ️ Помощь|Help"), help_cmd))
-    app.add_handler(CommandHandler("referral", referral))
-    
-    app.add_handler(CallbackQueryHandler(config_action, pattern=r"^(cfg|down|del|req|delreq)_"))
-    app.add_handler(CallbackQueryHandler(set_theme, pattern=r"^theme_"))
-    app.add_handler(CallbackQueryHandler(set_language, pattern=r"^lang_"))
-    app.add_handler(CallbackQueryHandler(
-        lambda u, c: u.message.reply_text("🏠 Главное меню", reply_markup=main_kb(get_user(u.effective_user.id)[5] or 'ru')), 
-        pattern=r"^back_main"
-    ))
-    
-    broadcast_handler = ConversationHandler(
+    # ConversationHandler для рассылки
+    broadcast_conv = ConversationHandler(
         entry_points=[CommandHandler("broadcast", broadcast)],
-        states={BROADCAST_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_broadcast)]},
-        fallbacks=[]
+        states={
+            BROADCAST_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_broadcast)]
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
     )
-    app.add_handler(broadcast_handler)
     
-    add_config_handler = ConversationHandler(
+    # ConversationHandler для добавления конфигурации
+    add_config_conv = ConversationHandler(
         entry_points=[CommandHandler("addconfig", add_config)],
-        states={ADD_CONFIG: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_add_config)]},
-        fallbacks=[]
+        states={
+            ADD_CONFIG: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_add_config),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, finalize_add_config)
+            ]
+        },
+        fallbacks=[CommandHandler("cancel", cancel)]
     )
-    app.add_handler(add_config_handler)
     
-    edit_config_handler = ConversationHandler(
+    # ConversationHandler для редактирования конфигурации
+    edit_config_conv = ConversationHandler(
         entry_points=[CommandHandler("editconfig", edit_config)],
         states={
-            EDIT_CONFIG: [MessageHandler(filters.TEXT & ~filters.COMMAND, process_edit_config_data)],
-            CONFIG_TYPE: [CallbackQueryHandler(process_edit_config_type, pattern=r"^edit_")]
+            EDIT_CONFIG: [
+                CallbackQueryHandler(handle_edit_config, pattern='^edit_'),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, finalize_edit_config)
+            ]
         },
-        fallbacks=[]
+        fallbacks=[CallbackQueryHandler(back_to_main, pattern='^back_main$'),
+                   CommandHandler("cancel", cancel)]
     )
-    app.add_handler(edit_config_handler)
     
-    settings_handler = ConversationHandler(
+    # ConversationHandler для настроек
+    settings_conv = ConversationHandler(
         entry_points=[CommandHandler("settings", admin_settings)],
         states={
             SETTINGS: [
-                CallbackQueryHandler(handle_admin_settings, pattern=r"^set_"),
+                CallbackQueryHandler(handle_admin_settings),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_admin_settings)
             ]
         },
-        fallbacks=[]
+        fallbacks=[CallbackQueryHandler(back_to_main, pattern='^back_main$'),
+                   CommandHandler("cancel", cancel)]
     )
-    app.add_handler(settings_handler)
     
-    all_users_handler = ConversationHandler(
+    # ConversationHandler для списка пользователей
+    users_conv = ConversationHandler(
         entry_points=[CommandHandler("allusers", all_users)],
         states={
             ALL_USERS: [
-                CallbackQueryHandler(handle_users_list, pattern=r"^(page|filter|sort|search|export|ban|unban|notify|user|back_users)_"),
+                CallbackQueryHandler(handle_users_list),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, process_search_users)
             ],
             NOTIFY: [MessageHandler(filters.TEXT & ~filters.COMMAND, notify_user)]
         },
-        fallbacks=[]
+        fallbacks=[CallbackQueryHandler(back_to_main, pattern='^back_main$'),
+                   CommandHandler("cancel", cancel)]
     )
-    app.add_handler(all_users_handler)
     
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("userinfo", user_info))
-    app.add_handler(CommandHandler("listusers", list_users))
-    app.add_handler(CommandHandler("ban", ban_user_cmd))
-    app.add_handler(CommandHandler("unban", unban_user_cmd))
+    # Регистрация обработчиков
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_cmd))
+    application.add_handler(CommandHandler("referral", referral))
+    application.add_handler(MessageHandler(filters.Regex("^(📁 Мои конфиги|My configs)$"), show_configs))
+    application.add_handler(CallbackQueryHandler(config_action, pattern='^(cfg_|req_|down_|del_|delreq_)'))
+    application.add_handler(MessageHandler(filters.Regex("^(⚙️ Настройки|Settings)$"), settings))
+    application.add_handler(CallbackQueryHandler(set_theme, pattern='^theme_'))
+    application.add_handler(CallbackQueryHandler(set_language, pattern='^lang_'))
+    application.add_handler(config_conv)
+    application.add_handler(broadcast_conv)
+    application.add_handler(add_config_conv)
+    application.add_handler(edit_config_conv)
+    application.add_handler(settings_conv)
+    application.add_handler(users_conv)
+    application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("userinfo", user_info))
+    application.add_handler(CommandHandler("listusers", list_users))
+    application.add_handler(CommandHandler("ban", ban_user_cmd))
+    application.add_handler(CommandHandler("unban", unban_user_cmd))
     
-    app.job_queue.run_daily(lambda ctx: cleanup_old_configs(), time=datetime.now().time())
-    
-    app.run_polling()
-    conn.close()
+    application.run_polling()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
