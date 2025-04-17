@@ -3,6 +3,7 @@ import sqlite3
 import io
 import json
 import uuid
+import csv
 from datetime import datetime, timedelta
 from telegram import (
     Update,
@@ -30,8 +31,9 @@ TOKEN = os.getenv("TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 
 # Константы
-BROADCAST_MESSAGE, ADD_CONFIG, EDIT_CONFIG, SETTINGS, NOTIFY = range(5)
+BROADCAST_MESSAGE, ADD_CONFIG, EDIT_CONFIG, SETTINGS, NOTIFY, ALL_USERS = range(6)
 CONFIG_TYPE, DNS_CHOICE = range(2)
+USERS_PER_PAGE = 10
 STATS_DAYS = 30
 
 # Настройка логов
@@ -110,7 +112,7 @@ conn.commit()
 # Инициализация настроек бота
 def init_default_settings():
     default_settings = {
-        "welcome_message": "🚀 Добро пожаловать в Warp Generator!\nВаш Telegram ID: {user_id}",
+        "welcome_message": "🚀 Добро пожаловать в Warp Generator!\nВаш Telegram ID: {user_id}\nВаш реферальный код: {referral_code}",
         "veless_daily_limit": 1,
         "global_config_limit": 5,
         "config_cleanup_days": 30,
@@ -163,6 +165,33 @@ def init_default_templates():
         },
         {
             "name": "AWG",
+            "template_data": {
+                "PrivateKey": "7m8KfcDzbsd4MgqmzDyxnqguo6/RnzFHvDB90vEK8rI=",
+                "PublicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
+                "Address": "172.16.0.2, 2606:4700:110:8fda:bbc:18fb:580f:78a3",
+                "Endpoint": "engage.cloudflareclient.com:2408",
+                "DNS": {
+                    'cloudflare': '1.1.1.1, 2606:4700:4700::1111, 1.0.0.1, 2606:4700:4700::1001',
+                    'google': '8.8.8.8, 2001:4860:4860::8888',
+                    'adguard': '94.140.14.14, 2a10:50c0::ad1:ff'
+                },
+                "extra_params": {
+                    "S1": 0,
+                    "S2": 0,
+                    "Jc": 4,
+                    "Jmin": 40,
+                    "Jmax": 70,
+                    "H1": 1,
+                    "H2": 2,
+                    "H3": 3,
+                    "H4": 4,
+                    "MTU": 1280
+                }
+            },
+            "enabled": 1
+        },
+        {
+            "name": "AstraWarpBot",
             "template_data": {
                 "PrivateKey": "7m8KfcDzbsd4MgqmzDyxnqguo6/RnzFHvDB90vEK8rI=",
                 "PublicKey": "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=",
@@ -337,6 +366,78 @@ def add_referral(user_id: int, referrer_code: str):
         return referrer[0]
     return None
 
+def get_users_paginated(page: int = 0, filter_type: str = 'all', sort_by: str = 'created_at_desc', search_query: str = None):
+    offset = page * USERS_PER_PAGE
+    query = '''SELECT user_id, username, full_name, created_at 
+               FROM users'''
+    params = []
+    
+    # Фильтрация
+    if filter_type == 'active':
+        query += ''' WHERE user_id NOT IN (SELECT user_id FROM banned_users)'''
+    elif filter_type == 'banned':
+        query += ''' WHERE user_id IN (SELECT user_id FROM banned_users)'''
+    
+    # Поиск
+    if search_query:
+        if query.find('WHERE') == -1:
+            query += ' WHERE '
+        else:
+            query += ' AND '
+        query += '''(user_id LIKE ? OR username LIKE ? OR full_name LIKE ?)'''
+        search_pattern = f'%{search_query}%'
+        params.extend([search_pattern, search_pattern, search_pattern])
+    
+    # Сортировка
+    if sort_by == 'created_at_asc':
+        query += ' ORDER BY created_at ASC'
+    elif sort_by == 'user_id':
+        query += ' ORDER BY user_id ASC'
+    else:  # created_at_desc
+        query += ' ORDER BY created_at DESC'
+    
+    # Пагинация
+    query += ' LIMIT ? OFFSET ?'
+    params.extend([USERS_PER_PAGE, offset])
+    
+    cursor.execute(query, params)
+    users = cursor.fetchall()
+    
+    # Подсчет общего количества
+    count_query = '''SELECT COUNT(*) FROM users'''
+    count_params = []
+    if filter_type == 'active':
+        count_query += ''' WHERE user_id NOT IN (SELECT user_id FROM banned_users)'''
+    elif filter_type == 'banned':
+        count_query += ''' WHERE user_id IN (SELECT user_id FROM banned_users)'''
+    if search_query:
+        if count_query.find('WHERE') == -1:
+            count_query += ' WHERE '
+        else:
+            count_query += ' AND '
+        count_query += '''(user_id LIKE ? OR username LIKE ? OR full_name LIKE ?)'''
+        count_params.extend([search_pattern, search_pattern, search_pattern])
+    
+    cursor.execute(count_query, count_params)
+    total_users = cursor.fetchone()[0]
+    
+    return users, total_users
+
+def export_users_to_csv():
+    cursor.execute('''SELECT user_id, username, full_name, created_at, 
+                     CASE WHEN user_id IN (SELECT user_id FROM banned_users) THEN 'Banned' ELSE 'Active' END as status
+                     FROM users''')
+    users = cursor.fetchall()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(['ID', 'Username', 'Full Name', 'Created At', 'Status'])
+    for user in users:
+        writer.writerow(user)
+    
+    output.seek(0)
+    return output
+
 # Генерация конфигов
 def generate_config(config_type: str, dns: str) -> str:
     template = get_config_template(config_type)
@@ -372,6 +473,10 @@ def get_text(key: str, language: str) -> str:
             "veless_link": "🔗 Для получения Xray VPN Veless перейдите на сайт:",
             "config_created": "✅ Конфиг успешно создан!",
             "no_configs": "📭 Нет сохранённых конфигов или запросов",
+            "no_users": "📭 Нет зарегистрированных пользователей",
+            "users_list": "📋 Список пользователей (страница {page} из {total_pages}):\n\n{users}",
+            "user_actions": "👤 Пользователь {user_id} ({full_name})",
+            "search_users": "🔍 Введите запрос для поиска (ID или имя):",
             "help": (
                 "ℹ️ Доступные команды:\n\n"
                 "🔄 Новый конфиг - создать новый конфиг\n"
@@ -386,6 +491,7 @@ def get_text(key: str, language: str) -> str:
                 "/addconfig - добавить новый тип конфигурации\n"
                 "/editconfig - редактировать тип конфигурации\n"
                 "/listusers - список всех пользователей\n"
+                "/allusers - расширенный список пользователей\n"
                 "/ban USER_ID - заблокировать пользователя\n"
                 "/unban USER_ID - разблокировать пользователя\n"
                 "/settings - настройки бота\n"
@@ -400,6 +506,10 @@ def get_text(key: str, language: str) -> str:
             "veless_link": "🔗 To get Xray VPN Veless, visit the website:",
             "config_created": "✅ Config successfully created!",
             "no_configs": "📭 No saved configs or requests",
+            "no_users": "📭 No registered users",
+            "users_list": "📋 Users list (page {page} of {total_pages}):\n\n{users}",
+            "user_actions": "👤 User {user_id} ({full_name})",
+            "search_users": "🔍 Enter search query (ID or name):",
             "help": (
                 "ℹ️ Available commands:\n\n"
                 "🔄 New config - create a new config\n"
@@ -414,6 +524,7 @@ def get_text(key: str, language: str) -> str:
                 "/addconfig - add new config type\n"
                 "/editconfig - edit config type\n"
                 "/listusers - list all users\n"
+                "/allusers - advanced users list\n"
                 "/ban USER_ID - ban user\n"
                 "/unban USER_ID - unban user\n"
                 "/settings - bot settings\n"
@@ -422,7 +533,8 @@ def get_text(key: str, language: str) -> str:
         }
     }
     return texts.get(language, texts["ru"]).get(key, key).format(
-        user_id="{user_id}", referral_code="{referral_code}", limit="{limit}"
+        user_id="{user_id}", referral_code="{referral_code}", limit="{limit}",
+        page="{page}", total_pages="{total_pages}", users="{users}", full_name="{full_name}"
     )
 
 # Клавиатуры
@@ -488,6 +600,53 @@ def admin_settings_kb():
         [InlineKeyboardButton("🔙 Назад", callback_data='back_main')]
     ])
 
+def users_list_kb(page: int, total_users: int, filter_type: str, sort_by: str, language: str = 'ru'):
+    total_pages = (total_users + USERS_PER_PAGE - 1) // USERS_PER_PAGE
+    keyboard = []
+    
+    # Фильтры
+    keyboard.append([
+        InlineKeyboardButton("Все" if filter_type != 'all' else "✅ Все", callback_data=f"filter_all_{sort_by}_{page}"),
+        InlineKeyboardButton("Активные" if filter_type != 'active' else "✅ Активные", callback_data=f"filter_active_{sort_by}_{page}"),
+        InlineKeyboardButton("Заблокированные" if filter_type != 'banned' else "✅ Заблокированные", callback_data=f"filter_banned_{sort_by}_{page}")
+    ])
+    
+    # Сортировка
+    keyboard.append([
+        InlineKeyboardButton("По дате ↓" if sort_by != 'created_at_desc' else "✅ По дате ↓", callback_data=f"sort_created_at_desc_{filter_type}_{page}"),
+        InlineKeyboardButton("По дате ↑" if sort_by != 'created_at_asc' else "✅ По дате ↑", callback_data=f"sort_created_at_asc_{filter_type}_{page}"),
+        InlineKeyboardButton("По ID" if sort_by != 'user_id' else "✅ По ID", callback_data=f"sort_user_id_{filter_type}_{page}")
+    ])
+    
+    # Пагинация
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️ Назад", callback_data=f"page_{page-1}_{filter_type}_{sort_by}"))
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton("Вперёд ➡️", callback_data=f"page_{page+1}_{filter_type}_{sort_by}"))
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    
+    # Дополнительные действия
+    keyboard.append([
+        InlineKeyboardButton("🔍 Поиск", callback_data=f"search_{filter_type}_{sort_by}_{page}"),
+        InlineKeyboardButton("📤 Экспорт CSV", callback_data=f"export_{filter_type}_{sort_by}_{page}")
+    ])
+    
+    keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data='back_main')])
+    return InlineKeyboardMarkup(keyboard)
+
+def user_actions_kb(user_id: int, is_banned: bool, language: str = 'ru'):
+    keyboard = [
+        [
+            InlineKeyboardButton("🚫 Заблокировать" if not is_banned else "✅ Разблокировать", 
+                               callback_data=f"{'ban' if not is_banned else 'unban'}_{user_id}"),
+            InlineKeyboardButton("📩 Уведомить", callback_data=f"notify_{user_id}")
+        ],
+        [InlineKeyboardButton("🔙 Назад", callback_data='back_users')]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
 # Обработчики
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -501,7 +660,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     language = user_data[5] or 'ru'
     referral_code = user_data[6]
     
-    # Обработка реферального кода из /start@BotName:CODE
     if context.args and context.args[0].startswith(':'):
         referrer_code = context.args[0][1:]
         referrer_id = add_referral(user.id, referrer_code)
@@ -597,7 +755,7 @@ async def handle_dns_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("⛔ Ошибка: шаблон конфигурации не найден")
         return ConversationHandler.END
     
-    filename = f"{config_type}_{dns_type}.conf"
+    filename = "astrawarpbot.conf" if config_type == "AstraWarpBot" else f"{config_type}_{dns_type}.conf"
     
     save_config(user_id, config_content, config_type)
     update_dns_stats(dns_type)
@@ -682,10 +840,11 @@ async def config_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         config_id = data.split('_')[1]
         cursor.execute('SELECT content, config_type FROM configs WHERE id = ?', (config_id,))
         content, config_type = cursor.fetchone()
+        filename = "astrawarpbot.conf" if config_type == "AstraWarpBot" else f"warp_{config_type}_{config_id}.conf"
         await context.bot.send_document(
             chat_id=query.message.chat_id,
             document=content.encode('utf-8'),
-            filename=f'warp_{config_type}_{config_id}.conf'
+            filename=filename
         )
     
     elif data.startswith('del_'):
@@ -829,36 +988,25 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = "📊 Статистика:\n\n"
     for period_name, days in periods:
-        # Активность
         cursor.execute('''SELECT COUNT(*) 
                        FROM user_activity 
                        WHERE timestamp >= DATE('now', ? || ' days')''', (f"-{days}",))
         activity_count = cursor.fetchone()[0]
         
-        # Конфиги
         cursor.execute('''SELECT config_type, COUNT(*) 
                        FROM configs 
                        WHERE created_at >= DATE('now', ? || ' days') 
                        GROUP BY config_type''', (f"-{days}",))
         config_stats = cursor.fetchall()
         
-        # Запросы Xray VPN Veless
         cursor.execute('''SELECT COUNT(*) 
                        FROM site_requests 
                        WHERE created_at >= DATE('now', ? || ' days') 
                        AND site_name = ?''', (f"-{days}", 'Xray VPN Veless'))
         veless_requests = cursor.fetchone()[0]
         
-        # DNS
-        cursor.execute('''SELECT dns_type, SUM(count) 
-                       FROM dns_usage 
-                       WHERE id IN (
-                           SELECT id FROM dns_usage 
-                           WHERE id IN (
-                               SELECT id FROM configs 
-                               WHERE created_at >= DATE('now', ? || ' days')
-                           )
-                       ) GROUP BY dns_type''', (f"-{days}",))
+        cursor.execute('''SELECT dns_type, count 
+                       FROM dns_usage''')
         dns_stats = cursor.fetchall()
         
         text += f"📅 За {period_name}:\n"
@@ -868,7 +1016,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"🌐 Xray VPN Veless: {veless_requests}\n"
         text += "📊 DNS:\n" + "\n".join([f"  {d[0]}: {d[1]}" for d in dns_stats]) + "\n\n"
         
-        # График активности
         cursor.execute('''SELECT DATE(timestamp), COUNT(*) 
                        FROM user_activity 
                        WHERE timestamp >= DATE('now', ? || ' days') 
@@ -945,7 +1092,7 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users = cursor.fetchall()
     
     if not users:
-        await update.message.reply_text("📭 Нет зарегистрированных пользователей")
+        await update.message.reply_text(get_text("no_users", 'ru'))
         return
     
     text = "📋 Список пользователей:\n\n"
@@ -954,6 +1101,217 @@ async def list_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text += f"🆔 {user[0]} | 👤 {user[1]} | 📅 {user[2][:10]}{is_banned_status}\n"
     
     await update.message.reply_text(text)
+
+async def all_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Доступ запрещён!")
+        return
+    
+    context.user_data['all_users_filter'] = 'all'
+    context.user_data['all_users_sort'] = 'created_at_desc'
+    context.user_data['all_users_page'] = 0
+    context.user_data['all_users_search'] = None
+    
+    if context.args and context.args[0] == 'search':
+        await update.message.reply_text(get_text("search_users", 'ru'))
+        return ALL_USERS
+    
+    users, total_users = get_users_paginated()
+    if not users:
+        await update.message.reply_text(get_text("no_users", 'ru'))
+        return
+    
+    user_list = ""
+    for user in users:
+        user_id, username, full_name, created_at = user
+        status = "🚫" if is_banned(user_id) else "✅"
+        user_list += f"🆔 {user_id} | 👤 {full_name or username or 'N/A'} | 📅 {created_at[:10]} | {status}\n"
+    
+    total_pages = (total_users + USERS_PER_PAGE - 1) // USERS_PER_PAGE
+    await update.message.reply_text(
+        get_text("users_list", 'ru').format(page=1, total_pages=total_pages, users=user_list),
+        reply_markup=users_list_kb(0, total_users, 'all', 'created_at_desc')
+    )
+    log_admin_action(user_id, "view_all_users", "Viewed users list")
+    return ALL_USERS
+
+async def handle_users_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    user_id = query.from_user.id
+    if user_id != ADMIN_ID:
+        await query.edit_message_text("⛔ Доступ запрещён!")
+        return ConversationHandler.END
+    
+    await query.answer()
+    data = query.data.split('_')
+    action = data[0]
+    
+    filter_type = context.user_data.get('all_users_filter', 'all')
+    sort_by = context.user_data.get('all_users_sort', 'created_at_desc')
+    page = context.user_data.get('all_users_page', 0)
+    search_query = context.user_data.get('all_users_search')
+    
+    if action in ['page', 'filter', 'sort']:
+        if action == 'page':
+            page = int(data[1])
+            filter_type = data[2]
+            sort_by = data[3]
+        elif action == 'filter':
+            filter_type = data[1]
+            sort_by = data[2]
+            page = int(data[3])
+        elif action == 'sort':
+            sort_by = data[1]
+            filter_type = data[2]
+            page = int(data[3])
+        
+        context.user_data['all_users_filter'] = filter_type
+        context.user_data['all_users_sort'] = sort_by
+        context.user_data['all_users_page'] = page
+        
+        users, total_users = get_users_paginated(page, filter_type, sort_by, search_query)
+        if not users:
+            await query.edit_message_text(get_text("no_users", 'ru'))
+            return
+        
+        user_list = ""
+        for user in users:
+            user_id, username, full_name, created_at = user
+            status = "🚫" if is_banned(user_id) else "✅"
+            user_list += f"🆔 {user_id} | 👤 {full_name or username or 'N/A'} | 📅 {created_at[:10]} | {status}\n"
+        
+        total_pages = (total_users + USERS_PER_PAGE - 1) // USERS_PER_PAGE
+        await query.edit_message_text(
+            get_text("users_list", 'ru').format(page=page+1, total_pages=total_pages, users=user_list),
+            reply_markup=users_list_kb(page, total_users, filter_type, sort_by)
+        )
+    
+    elif action == 'search':
+        context.user_data['all_users_filter'] = data[1]
+        context.user_data['all_users_sort'] = data[2]
+        context.user_data['all_users_page'] = int(data[3])
+        await query.edit_message_text(get_text("search_users", 'ru'))
+        return ALL_USERS
+    
+    elif action == 'export':
+        filter_type = data[1]
+        sort_by = data[2]
+        page = int(data[3])
+        csv_file = export_users_to_csv()
+        await context.bot.send_document(
+            chat_id=query.message.chat_id,
+            document=csv_file,
+            filename="users.csv",
+            caption="📤 Список пользователей"
+        )
+        csv_file.close()
+        log_admin_action(user_id, "export_users", f"Exported users list (filter: {filter_type}, sort: {sort_by})")
+    
+    elif action in ['ban', 'unban']:
+        target_id = int(data[1])
+        if target_id == ADMIN_ID:
+            await query.edit_message_text("⛔ Нельзя заблокировать админа!")
+            return
+        
+        if action == 'ban':
+            ban_user(target_id)
+            action_text = "banned"
+        else:
+            unban_user(target_id)
+            action_text = "unbanned"
+        
+        log_admin_action(user_id, action, f"User {target_id} {action_text}")
+        user = get_user(target_id)
+        await query.edit_message_text(
+            get_text("user_actions", 'ru').format(user_id=target_id, full_name=user[3] or user[2] or 'N/A'),
+            reply_markup=user_actions_kb(target_id, is_banned(target_id))
+        )
+    
+    elif action == 'notify':
+        target_id = int(data[1])
+        context.user_data['notify_user_id'] = target_id
+        await query.edit_message_text("📩 Введите сообщение для пользователя:")
+        return NOTIFY
+    
+    elif action == 'user':
+        target_id = int(data[1])
+        user = get_user(target_id)
+        await query.edit_message_text(
+            get_text("user_actions", 'ru').format(user_id=target_id, full_name=user[3] or user[2] or 'N/A'),
+            reply_markup=user_actions_kb(target_id, is_banned(target_id))
+        )
+    
+    elif action == 'back_users':
+        users, total_users = get_users_paginated(page, filter_type, sort_by, search_query)
+        if not users:
+            await query.edit_message_text(get_text("no_users", 'ru'))
+            return
+        
+        user_list = ""
+        for user in users:
+            user_id, username, full_name, created_at = user
+            status = "🚫" if is_banned(user_id) else "✅"
+            user_list += f"🆔 {user_id} | 👤 {full_name or username or 'N/A'} | 📅 {created_at[:10]} | {status}\n"
+        
+        total_pages = (total_users + USERS_PER_PAGE - 1) // USERS_PER_PAGE
+        await query.edit_message_text(
+            get_text("users_list", 'ru').format(page=page+1, total_pages=total_pages, users=user_list),
+            reply_markup=users_list_kb(page, total_users, filter_type, sort_by)
+        )
+
+async def process_search_users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Доступ запрещён!")
+        return ConversationHandler.END
+    
+    search_query = update.message.text
+    context.user_data['all_users_search'] = search_query
+    filter_type = context.user_data.get('all_users_filter', 'all')
+    sort_by = context.user_data.get('all_users_sort', 'created_at_desc')
+    page = 0
+    context.user_data['all_users_page'] = page
+    
+    users, total_users = get_users_paginated(page, filter_type, sort_by, search_query)
+    if not users:
+        await update.message.reply_text(get_text("no_users", 'ru'))
+        return ConversationHandler.END
+    
+    user_list = ""
+    for user in users:
+        user_id, username, full_name, created_at = user
+        status = "🚫" if is_banned(user_id) else "✅"
+        user_list += f"🆔 {user_id} | 👤 {full_name or username or 'N/A'} | 📅 {created_at[:10]} | {status}\n"
+    
+    total_pages = (total_users + USERS_PER_PAGE - 1) // USERS_PER_PAGE
+    await update.message.reply_text(
+        get_text("users_list", 'ru').format(page=page+1, total_pages=total_pages, users=user_list),
+        reply_markup=users_list_kb(page, total_users, filter_type, sort_by)
+    )
+    log_admin_action(user_id, "search_users", f"Searched users with query: {search_query}")
+    return ALL_USERS
+
+async def notify_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        await update.message.reply_text("⛔ Доступ запрещён!")
+        return ConversationHandler.END
+    
+    target_id = context.user_data.get('notify_user_id')
+    if not target_id:
+        await update.message.reply_text("⛔ Ошибка: пользователь не выбран")
+        return ConversationHandler.END
+    
+    message = update.message.text
+    try:
+        await context.bot.send_message(target_id, f"📢 Уведомление от админа:\n{message}")
+        log_admin_action(user_id, "notify", f"Sent to {target_id}: {message}")
+        await update.message.reply_text(f"✅ Уведомление отправлено пользователю {target_id}", reply_markup=main_kb('ru'))
+    except Exception as e:
+        await update.message.reply_text(f"⛔ Ошибка: {str(e)}")
+    
+    return ConversationHandler.END
 
 async def ban_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1050,29 +1408,6 @@ async def process_admin_settings(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(f"⛔ Ошибка: {str(e)}")
     
     return ConversationHandler.END
-
-async def notify_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id != ADMIN_ID:
-        await update.message.reply_text("⛔ Доступ запрещён!")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("Используйте: /notify USER_ID MESSAGE")
-        return
-    
-    try:
-        target_id = int(context.args[0])
-        message = ' '.join(context.args[1:])
-        if not message:
-            await update.message.reply_text("⛔ Сообщение не может быть пустым")
-            return
-        
-        await context.bot.send_message(target_id, f"📢 Уведомление от админа:\n{message}")
-        log_admin_action(user_id, "notify", f"Sent to {target_id}: {message}")
-        await update.message.reply_text(f"✅ Уведомление отправлено пользователю {target_id}")
-    except:
-        await update.message.reply_text("Используйте: /notify USER_ID MESSAGE")
 
 async def add_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -1186,10 +1521,10 @@ async def process_edit_config_data(update: Update, context: ContextTypes.DEFAULT
         for field in required_fields:
             if field not in config_data:
                 await update.message.reply_text(f"⛔ Ошибка: отсутствует поле {field}")
-                return ConversationHandler.END
+                return ConversationHandler_END
         if not isinstance(config_data['DNS'], dict) or not all(k in config_data['DNS'] for k in ['cloudflare', 'google', 'adguard']):
             await update.message.reply_text("⛔ Ошибка: неверный формат DNS")
-            return ConversationHandler.END
+            return ConversationHandler_END
         
         update_config_template(name, config_data, enabled)
         log_admin_action(user_id, "edit_config", f"Edited config type {name}")
@@ -1199,7 +1534,7 @@ async def process_edit_config_data(update: Update, context: ContextTypes.DEFAULT
     except Exception as e:
         await update.message.reply_text(f"⛔ Ошибка: {str(e)}")
     
-    return ConversationHandler.END
+    return ConversationHandler_END
 
 # Запуск
 def main():
@@ -1228,7 +1563,7 @@ def main():
     app.add_handler(CallbackQueryHandler(set_language, pattern=r"^lang_"))
     app.add_handler(CallbackQueryHandler(
         lambda u, c: u.message.reply_text("🏠 Главное меню", reply_markup=main_kb(get_user(u.effective_user.id)[5] or 'ru')), 
-        pattern=r"^back_"
+        pattern=r"^back_main"
     ))
     
     broadcast_handler = ConversationHandler(
@@ -1267,14 +1602,25 @@ def main():
     )
     app.add_handler(settings_handler)
     
+    all_users_handler = ConversationHandler(
+        entry_points=[CommandHandler("allusers", all_users)],
+        states={
+            ALL_USERS: [
+                CallbackQueryHandler(handle_users_list, pattern=r"^(page|filter|sort|search|export|ban|unban|notify|user|back_users)_"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, process_search_users)
+            ],
+            NOTIFY: [MessageHandler(filters.TEXT & ~filters.COMMAND, notify_user)]
+        },
+        fallbacks=[]
+    )
+    app.add_handler(all_users_handler)
+    
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("userinfo", user_info))
     app.add_handler(CommandHandler("listusers", list_users))
     app.add_handler(CommandHandler("ban", ban_user_cmd))
     app.add_handler(CommandHandler("unban", unban_user_cmd))
-    app.add_handler(CommandHandler("notify", notify_user))
     
-    # Периодическая очистка старых конфигураций
     app.job_queue.run_daily(lambda ctx: cleanup_old_configs(), time=datetime.now().time())
     
     app.run_polling()
