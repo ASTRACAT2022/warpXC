@@ -12,6 +12,8 @@ from telegram.ext import (
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import pandas as pd
+from wireguard_tools import WireguardKey
+import tempfile
 
 # Настройка логирования
 logging.basicConfig(
@@ -167,6 +169,31 @@ def plot_hourly_activity():
     plt.close()
     return plot_path
 
+# Генерация конфигурации WARP
+def generate_warp_config(user_id):
+    try:
+        # Генерация ключей
+        private_key = WireguardKey.generate()
+        public_key = "uNe2kshOUSrL3B3rN4yT3fN/Ij4oYdQ86tkqT3Iu0mE="  # Пример публичного ключа WARP
+        config = (
+            "[Interface]\n"
+            f"PrivateKey = {private_key}\n"
+            "Address = 192.168.1.1/24\n"
+            "DNS = 1.1.1.1, 1.0.0.1\n\n"
+            "[Peer]\n"
+            f"PublicKey = {public_key}\n"
+            "Endpoint = 162.159.192.1:2408\n"
+            "AllowedIPs = 0.0.0.0/0, ::/0"
+        )
+        # Создаем временный файл
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".conf", mode="w") as f:
+            f.write(config)
+            config_path = f.name
+        return config_path
+    except Exception as e:
+        logger.error(f"Ошибка генерации конфигурации: {e}")
+        return None
+
 # Создание клавиатуры с кнопками
 def get_main_keyboard(is_admin_user=False):
     keyboard = [
@@ -206,17 +233,31 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data == "get_config":
-        config_text = (
-            "Вот пример конфигурации WARP:\n\n"
-            "[Interface]\nPrivateKey = your_private_key\nAddress = 192.168.1.1\nDNS = 1.1.1.1\n\n"
-            "[Peer]\nPublicKey = peer_public_key\nEndpoint = 162.159.192.1:2408\nAllowedIPs = 0.0.0.0/0"
-        )
-        await query.message.reply_text(config_text, reply_markup=reply_markup)
+        config_path = generate_warp_config(user.id)
+        if not config_path or not os.path.exists(config_path):
+            await query.message.reply_text(
+                "Ошибка при генерации конфигурации.", reply_markup=reply_markup
+            )
+            return
+        try:
+            with open(config_path, 'rb') as config_file:
+                await query.message.reply_document(
+                    document=config_file,
+                    filename=f"warp_config_{user.id}.conf",
+                    caption="Ваша конфигурация WARP",
+                    reply_markup=reply_markup
+                )
+            os.remove(config_path)
+        except Exception as e:
+            logger.error(f"Ошибка отправки конфигурации: {e}")
+            await query.message.reply_text(
+                "Ошибка при отправке конфигурации.", reply_markup=reply_markup
+            )
     elif query.data == "help":
         help_text = (
             "Я бот для управления WARP. Доступные команды:\n"
             "/start - Начать работу\n"
-            "/getconfig - Получить конфигурацию\n"
+            "/getconfig - Получить конфигурацию WARP (.conf файл)\n"
             "Для админов:\n"
             "/stats - Статистика\n"
             "/users - Список пользователей\n"
@@ -247,12 +288,27 @@ async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     is_admin_user = is_admin(user.id)
     reply_markup = get_main_keyboard(is_admin_user)
-    config_text = (
-        "Вот пример конфигурации WARP:\n\n"
-        "[Interface]\nPrivateKey = your_private_key\nAddress = 192.168.1.1\nDNS = 1.1.1.1\n\n"
-        "[Peer]\nPublicKey = peer_public_key\nEndpoint = 162.159.192.1:2408\nAllowedIPs = 0.0.0.0/0"
-    )
-    await update.message.reply_text(config_text, reply_markup=reply_markup)
+
+    config_path = generate_warp_config(user.id)
+    if not config_path or not os.path.exists(config_path):
+        await update.message.reply_text(
+            "Ошибка при генерации конфигурации.", reply_markup=reply_markup
+        )
+        return
+    try:
+        with open(config_path, 'rb') as config_file:
+            await update.message.reply_document(
+                document=config_file,
+                filename=f"warp_config_{user.id}.conf",
+                caption="Ваша конфигурация WARP",
+                reply_markup=reply_markup
+            )
+        os.remove(config_path)
+    except Exception as e:
+        logger.error(f"Ошибка отправки конфигурации: {e}")
+        await update.message.reply_text(
+            "Ошибка при отправке конфигурации.", reply_markup=reply_markup
+        )
 
 # Обработчик команды /stats
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
