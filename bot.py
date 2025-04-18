@@ -202,7 +202,7 @@ def get_main_keyboard(is_admin_user=False):
             InlineKeyboardButton("Справка", callback_data="help"),
         ],
         [
-            InlineKeyboardButton("XrayVPN", url="https://astracat2022.github.io/vpngen/generator"),
+            InlineKeyboardButton("XrayVPN", url="https://astracat2022.github.io/vpngen"),
         ]
     ]
     if is_admin_user:
