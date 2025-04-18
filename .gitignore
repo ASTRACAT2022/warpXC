@@ -4,3 +4,5 @@
 *.conf
 __pycache__/
 warp_bot.db
+static/
+templates/
