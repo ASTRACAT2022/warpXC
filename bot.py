@@ -11,7 +11,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
-from telegram.error import Conflict
+from telegram.error import Conflict, NetworkError, TelegramError
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import pandas as pd
@@ -33,13 +33,16 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")
 
 if not BOT_TOKEN:
+    logger.error("Переменная окружения BOT_TOKEN не задана.")
     raise ValueError("Ошибка: Переменная окружения BOT_TOKEN не задана.")
 if not ADMIN_TELEGRAM_ID:
+    logger.error("Переменная окружения ADMIN_TELEGRAM_ID не задана.")
     raise ValueError("Ошибка: Переменная окружения ADMIN_TELEGRAM_ID не задана.")
 
 try:
     ADMIN_TELEGRAM_ID = int(ADMIN_TELEGRAM_ID)
 except ValueError:
+    logger.error("ADMIN_TELEGRAM_ID должен быть числом.")
     raise ValueError("Ошибка: ADMIN_TELEGRAM_ID должен быть числом.")
 
 # Инициализация Flask
@@ -523,15 +526,17 @@ async def hourly_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Запуск Telegram-бота
 async def run_bot():
+    logger.info("Попытка запуска Telegram-бота...")
     try:
         init_db()
         application = Application.builder().token(BOT_TOKEN).build()
+        logger.info("Application builder создан успешно.")
 
         # Явно отключаем webhook
         try:
             await application.bot.delete_webhook(drop_pending_updates=True)
             logger.info("Webhook успешно отключен.")
-        except Exception as e:
+        except TelegramError as e:
             logger.error(f"Ошибка при отключении webhook: {e}")
 
         # Регистрация обработчиков
@@ -544,6 +549,7 @@ async def run_bot():
         application.add_handler(CommandHandler("unban", unban))
         application.add_handler(CommandHandler("broadcast", broadcast))
         application.add_handler(CommandHandler("hourly_activity", hourly_activity))
+        logger.info("Обработчики команд зарегистрированы.")
 
         # Запуск бота с обработкой конфликтов
         max_retries = 3
@@ -552,11 +558,12 @@ async def run_bot():
             try:
                 await application.initialize()
                 await application.start()
-                logger.info("Бот запущен.")
+                logger.info("Бот успешно запущен.")
                 await application.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=True
                 )
+                logger.info("Polling начат.")
                 await application.run_polling()
                 break
             except Conflict as e:
@@ -567,20 +574,35 @@ async def run_bot():
                 else:
                     logger.error("Не удалось устранить конфликт getUpdates. Завершение работы.")
                     raise
+            except NetworkError as e:
+                logger.error(f"Сетевая ошибка при запуске бота: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.error("Сетевая ошибка не устранена. Завершение работы.")
+                    raise
+            except TelegramError as e:
+                logger.error(f"Ошибка Telegram API: {e}")
+                raise
             except Exception as e:
-                logger.error(f"Ошибка запуска бота: {e}")
+                logger.error(f"Неизвестная ошибка при запуске бота: {e}")
                 raise
     except Exception as e:
-        logger.error(f"Критическая ошибка: {e}")
+        logger.error(f"Критическая ошибка в run_bot: {e}")
         raise
 
 # Запуск Flask и Telegram-бота
 def main():
     logger.info("Запуск приложения...")
     # Запускаем Telegram-бот в отдельном потоке
-    bot_thread = threading.Thread(target=lambda: asyncio.run(run_bot()))
-    bot_thread.daemon = True
-    bot_thread.start()
+    try:
+        bot_thread = threading.Thread(target=lambda: asyncio.run(run_bot()))
+        bot_thread.daemon = True
+        bot_thread.start()
+        logger.info("Поток Telegram-бота запущен.")
+    except Exception as e:
+        logger.error(f"Ошибка при запуске потока бота: {e}")
 
     # Запускаем Flask (для локального тестирования, gunicorn используется на Render)
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
