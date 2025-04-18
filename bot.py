@@ -1,9 +1,8 @@
 import sqlite3
 import os
 import logging
-import argparse
-import shutil
 import asyncio
+import threading
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -16,7 +15,9 @@ from telegram.error import Conflict
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import pandas as pd
-from jinja2 import Environment, FileSystemLoader
+from flask import Flask, render_template_string, send_file
+import io
+from telegram.ext._application import Application
 
 # Настройка логирования
 logging.basicConfig(
@@ -42,16 +43,8 @@ try:
 except ValueError:
     raise ValueError("Ошибка: ADMIN_TELEGRAM_ID должен быть числом.")
 
-# Папки для статических файлов и шаблонов
-STATIC_DIR = "/tmp/static"
-TEMPLATE_DIR = "/tmp/templates"
-REPO_STATIC_DIR = os.path.join(os.getcwd(), "static")
-os.makedirs(STATIC_DIR, exist_ok=True)
-os.makedirs(TEMPLATE_DIR, exist_ok=True)
-os.makedirs(REPO_STATIC_DIR, exist_ok=True)
-
-# Инициализация Jinja2
-env = Environment(loader=FileSystemLoader(TEMPLATE_DIR))
+# Инициализация Flask
+app = Flask(__name__)
 
 # Инициализация базы данных
 def init_db():
@@ -94,7 +87,6 @@ def register_user(user_id, username):
         )
         conn.commit()
         logger.info(f"Пользователь {username} (ID: {user_id}) зарегистрирован.")
-        generate_site()  # Обновляем сайт после регистрации
     except sqlite3.Error as e:
         logger.error(f"Ошибка регистрации пользователя: {e}")
     finally:
@@ -140,7 +132,6 @@ def set_ban_status(user_id, ban_status):
         )
         conn.commit()
         logger.info(f"Пользователь ID {user_id} {'забанен' if ban_status else 'разбанен'}.")
-        generate_site()  # Обновляем сайт после изменения статуса
     except sqlite3.Error as e:
         logger.error(f"Ошибка изменения статуса бана: {e}")
     finally:
@@ -166,8 +157,8 @@ def get_hourly_activity():
     finally:
         conn.close()
 
-# Построение графика активности
-def plot_hourly_activity():
+# Генерация графика активности
+def generate_activity_plot():
     df = get_hourly_activity()
     if df.empty:
         return None
@@ -180,10 +171,11 @@ def plot_hourly_activity():
     plt.xticks(range(24))
     plt.grid(True, axis='y', linestyle='--', alpha=0.7)
 
-    plot_path = os.path.join(STATIC_DIR, "hourly_activity.png")
-    plt.savefig(plot_path, bbox_inches='tight')
+    buffer = io.BytesIO()
+    plt.savefig(buffer, format='png', bbox_inches='tight')
+    buffer.seek(0)
     plt.close()
-    return plot_path
+    return buffer
 
 # Генерация конфигурации WARP
 def generate_warp_config(user_id):
@@ -216,22 +208,46 @@ def generate_warp_config(user_id):
         logger.error(f"Ошибка генерации конфигурации: {e}")
         return None
 
-# Генерация HTML для сайта
-def generate_site():
-    try:
-        # Получаем статистику
-        active_users, banned_users = get_stats()
-        plot_path = plot_hourly_activity()
-
-        # Создаем шаблон HTML
-        template_str = """
+# Flask маршрут для главной страницы
+@app.route('/')
+def stats_page():
+    active_users, banned_users = get_stats()
+    return render_template_string(
+        """
         <!DOCTYPE html>
         <html lang="en">
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>WARP Bot Statistics</title>
-            <link rel="stylesheet" href="styles.css">
+            <style>
+                body {
+                    font-family: Arial, sans-serif;
+                    background-color: #f0f0f0;
+                    margin: 0;
+                    padding: 20px;
+                }
+                .container {
+                    max-width: 800px;
+                    margin: 0 auto;
+                    background-color: #fff;
+                    padding: 20px;
+                    border-radius: 8px;
+                    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+                }
+                h1, h2 {
+                    color: #333;
+                }
+                p {
+                    font-size: 16px;
+                    color: #555;
+                }
+                img {
+                    max-width: 100%;
+                    height: auto;
+                    margin-top: 20px;
+                }
+            </style>
         </head>
         <body>
             <div class="container">
@@ -239,77 +255,22 @@ def generate_site():
                 <p><strong>Active Users:</strong> {{ active_users }}</p>
                 <p><strong>Banned Users:</strong> {{ banned_users }}</p>
                 <h2>Hourly Activity (Last 24 Hours)</h2>
-                {% if plot_path %}
-                <img src="hourly_activity.png" alt="Hourly Activity Graph">
-                {% else %}
-                <p>No activity data available for the last 24 hours.</p>
-                {% endif %}
+                <img src="/activity_plot" alt="Hourly Activity Graph">
             </div>
         </body>
         </html>
-        """
-        # Сохраняем шаблон
-        template_path = os.path.join(TEMPLATE_DIR, "index.html")
-        with open(template_path, "w") as f:
-            f.write(template_str)
+        """,
+        active_users=active_users,
+        banned_users=banned_users
+    )
 
-        # Рендерим HTML
-        template = env.get_template("index.html")
-        html_content = template.render(
-            active_users=active_users,
-            banned_users=banned_users,
-            plot_path=plot_path
-        )
-
-        # Сохраняем HTML
-        html_path = os.path.join(STATIC_DIR, "index.html")
-        with open(html_path, "w") as f:
-            f.write(html_content)
-
-        # Создаем CSS
-        css_content = """
-        body {
-            font-family: Arial, sans-serif;
-            background-color: #f0f0f0;
-            margin: 0;
-            padding: 20px;
-        }
-        .container {
-            max-width: 800px;
-            margin: 0 auto;
-            background-color: #fff;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 0 10px rgba(0,0,0,0.1);
-        }
-        h1, h2 {
-            color: #333;
-        }
-        p {
-            font-size: 16px;
-            color: #555;
-        }
-        img {
-            max-width: 100%;
-            height: auto;
-            margin-top: 20px;
-        }
-        """
-        css_path = os.path.join(STATIC_DIR, "styles.css")
-        with open(css_path, "w") as f:
-            f.write(css_content)
-
-        # Копируем файлы в static/ для деплоя
-        shutil.copy(html_path, REPO_STATIC_DIR)
-        shutil.copy(css_path, REPO_STATIC_DIR)
-        if plot_path and os.path.exists(plot_path):
-            shutil.copy(plot_path, REPO_STATIC_DIR)
-
-        logger.info(f"Сайт сгенерирован: {html_path}")
-        return html_path
-    except Exception as e:
-        logger.error(f"Ошибка генерации сайта: {e}")
-        return None
+# Flask маршрут для графика активности
+@app.route('/activity_plot')
+def activity_plot():
+    plot_buffer = generate_activity_plot()
+    if not plot_buffer:
+        return "No activity data available for the last 24 hours.", 404
+    return send_file(plot_buffer, mimetype='image/png')
 
 # Создание клавиатуры с кнопками
 def get_main_keyboard(is_admin_user=False):
@@ -382,20 +343,18 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/unban <user_id> - Разбанить\n"
             "/broadcast <сообщение> - Рассылка\n"
             "/hourly_activity - График активности по часам\n"
-            "/updatesite - Обновить статистику на сайте"
         )
         await query.message.reply_text(help_text, reply_markup=reply_markup)
     elif query.data == "hourly_activity" and is_admin_user:
-        plot_path = plot_hourly_activity()
-        if not plot_path or not os.path.exists(plot_path):
+        plot_buffer = generate_activity_plot()
+        if not plot_buffer:
             await query.message.reply_text(
                 "Не удалось создать график. Нет данных за последние 24 часа.",
                 reply_markup=reply_markup,
             )
             return
         try:
-            with open(plot_path, 'rb') as photo:
-                await query.message.reply_photo(photo=photo, reply_markup=reply_markup)
+            await query.message.reply_photo(photo=plot_buffer, reply_markup=reply_markup)
         except Exception as e:
             logger.error(f"Ошибка отправки графика: {e}")
             await query.message.reply_text("Ошибка при отправке графика.", reply_markup=reply_markup)
@@ -546,9 +505,9 @@ async def hourly_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
 
-    plot_path = plot_hourly_activity()
+    plot_buffer = generate_activity_plot()
     reply_markup = get_main_keyboard(is_admin=True)
-    if not plot_path or not os.path.exists(plot_path):
+    if not plot_buffer:
         await update.message.reply_text(
             "Не удалось создать график. Нет данных за последние 24 часа.",
             reply_markup=reply_markup,
@@ -556,37 +515,15 @@ async def hourly_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        with open(plot_path, 'rb') as photo:
-            await update.message.reply_photo(photo=photo, reply_markup=reply_markup)
+        await update.message.reply_photo(photo=plot_buffer, reply_markup=reply_markup)
     except Exception as e:
         logger.error(f"Ошибка отправки графика: {e}")
         await update.message.reply_text("Ошибка при отправке графика.", reply_markup=reply_markup)
 
-# Обработчик команды /updatesite
-async def update_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Эта команда доступна только администратору.")
-        return
-
-    html_path = generate_site()
-    reply_markup = get_main_keyboard(is_admin=True)
-    if not html_path or not os.path.exists(html_path):
-        await update.message.reply_text(
-            "Ошибка при генерации сайта.", reply_markup=reply_markup
-        )
-        return
-
-    await update.message.reply_text(
-        f"Сайт успешно обновлен: {html_path}\nПроверьте: https://warpxc.onrender.com\n"
-        "Для публикации запустите GitHub Actions workflow.",
-        reply_markup=reply_markup
-    )
-
-# Основная функция
-async def main():
+# Запуск Telegram-бота
+async def run_bot():
     try:
         init_db()
-        generate_site()  # Инициализируем сайт при запуске
         application = Application.builder().token(BOT_TOKEN).build()
 
         # Явно отключаем webhook
@@ -606,7 +543,6 @@ async def main():
         application.add_handler(CommandHandler("unban", unban))
         application.add_handler(CommandHandler("broadcast", broadcast))
         application.add_handler(CommandHandler("hourly_activity", hourly_activity))
-        application.add_handler(CommandHandler("updatesite", update_site))
 
         # Запуск бота с обработкой конфликтов
         max_retries = 3
@@ -626,7 +562,7 @@ async def main():
                 logger.warning(f"Конфликт getUpdates (попытка {attempt + 1}/{max_retries}): {e}")
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_delay)
-                    retry_delay *= 2  # Экспоненциальная задержка
+                    retry_delay *= 2
                 else:
                     logger.error("Не удалось устранить конфликт getUpdates. Завершение работы.")
                     raise
@@ -637,17 +573,15 @@ async def main():
         logger.error(f"Критическая ошибка: {e}")
         raise
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--update-site", action="store_true", help="Update site files")
-    args = parser.parse_args()
+# Запуск Flask и Telegram-бота
+def main():
+    # Запускаем Telegram-бот в отдельном потоке
+    bot_thread = threading.Thread(target=lambda: asyncio.run(run_bot()))
+    bot_thread.daemon = True
+    bot_thread.start()
 
-    if args.update_site:
-        init_db()
-        html_path = generate_site()
-        if html_path:
-            print(f"Site updated: {html_path}")
-        else:
-            print("Failed to update site")
-    else:
-        asyncio.run(main())
+    # Запускаем Flask
+    app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+
+if __name__ == "__main__":
+    main()
