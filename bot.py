@@ -187,7 +187,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(help_message, reply_markup=get_user_keyboard())
 
 # Обработчик команды /stats (для админа)
-async def stats(update: Update, context: ContextTypes):
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
@@ -249,7 +249,7 @@ async def stats(update: Update, context: ContextTypes):
     os.remove('configs_stats.png')
 
 # Обработчик команды /users (для админа)
-async def users(update: Update, context: ContextTypes):
+async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
@@ -273,7 +273,7 @@ async def users(update: Update, context: ContextTypes):
     await update.message.reply_text(users_message)
 
 # Обработчик команды /ban (для админа)
-async def ban(update: Update, context: ContextTypes):
+async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
@@ -289,8 +289,7 @@ async def ban(update: Update, context: ContextTypes):
         c.execute("UPDATE users SET is_banned = 1 WHERE telegram_id = ?", (target_id,))
         conn.commit()
         conn.close()
-        bot = context.bot
-        await bot.send_message(chat_id=target_id, text="Вы были забанены администратором и больше не можете получать конфигурации.")
+        await context.bot.send_message(chat_id=target_id, text="Вы были забанены администратором и больше не можете получать конфигурации.")
         await update.message.reply_text(f"Пользователь {target_id} забанен.")
     except ValueError:
         await update.message.reply_text("Неверный формат Telegram ID.")
@@ -298,7 +297,7 @@ async def ban(update: Update, context: ContextTypes):
         await update.message.reply_text(f"Ошибка при попытке забанить пользователя: {e}")
 
 # Обработчик команды /unban (для админа)
-async def unban(update: Update, context: ContextTypes):
+async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
@@ -314,8 +313,7 @@ async def unban(update: Update, context: ContextTypes):
         c.execute("UPDATE users SET is_banned = 0 WHERE telegram_id = ?", (target_id,))
         conn.commit()
         conn.close()
-        bot = context.bot
-        await bot.send_message(chat_id=target_id, text="Вы были разбанены администратором и теперь можете получать конфигурации.")
+        await context.bot.send_message(chat_id=target_id, text="Вы были разбанены администратором и теперь можете получать конфигурации.")
         await update.message.reply_text(f"Пользователь {target_id} разбанен.")
     except ValueError:
         await update.message.reply_text("Неверный формат Telegram ID.")
@@ -323,7 +321,7 @@ async def unban(update: Update, context: ContextTypes):
         await update.message.reply_text(f"Ошибка при попытке разбанить пользователя: {e}")
 
 # Обработчик команды /broadcast (для админа)
-асинхронизация деф трансляция(обновление: Обновить, контекст: ContextTypes):
+асинхронизация деф трансляция(обновление: Обновить, контекст: ContextTypes.ТИП ПО УМОЛЧАНИЮ_TYPE):
     если не is_admin(обновление.эффективный_пользователь.идентификатор):
         ждать обновление.сообщение.ответить_text("Эта Команда пришла в себя и стала администратором".)
         возврат
@@ -348,7 +346,7 @@ async def unban(update: Update, context: ContextTypes):
     ждать обновление.сообщение.ответить_text("Рассылка завершена".)
 
 #Обработик ошибок
-асинхронизация деф ошибка_handler(обновление: Обновить, контекст: ContextTypes):
+асинхронизация деф ошибка_handler(обновление: Обновить, контекст: ContextTypes.ТИП ПО УМОЛЧАНИЮ_TYPE):
  лесоруб.ошибка(f"Обновить {обновлять} причиной ошибки {контекст.ошибка}")
 
 деф основной():
