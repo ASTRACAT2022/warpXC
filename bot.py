@@ -12,8 +12,8 @@ from telegram.ext import (
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import pandas as pd
-from wireguard_tools import WireguardKey
-import tempfile
+from jinja2 import Environment, FileSystemLoader
+import shutil
 
 # Настройка логирования
 logging.basicConfig(
@@ -38,6 +38,13 @@ try:
     ADMIN_TELEGRAM_ID = int(ADMIN_TELEGRAM_ID)
 except ValueError:
     raise ValueError("Ошибка: ADMIN_TELEGRAM_ID должен быть числом.")
+
+# Папка для статических файлов сайта
+STATIC_DIR = "/tmp/static"
+os.makedirs(STATIC_DIR, exist_ok=True)
+
+# Инициализация Jinja2
+env = Environment(loader=FileSystemLoader('/tmp/templates'))
 
 # Инициализация базы данных
 def init_db():
@@ -164,7 +171,7 @@ def plot_hourly_activity():
     plt.xticks(range(24))
     plt.grid(True, axis='y', linestyle='--', alpha=0.7)
 
-    plot_path = "hourly_activity.png"
+    plot_path = os.path.join(STATIC_DIR, "hourly_activity.png")
     plt.savefig(plot_path, bbox_inches='tight')
     plt.close()
     return plot_path
@@ -172,26 +179,122 @@ def plot_hourly_activity():
 # Генерация конфигурации WARP
 def generate_warp_config(user_id):
     try:
-        # Генерация ключей
-        private_key = WireguardKey.generate()
-        public_key = "uNe2kshOUSrL3B3rN4yT3fN/Ij4oYdQ86tkqT3Iu0mE="  # Пример публичного ключа WARP
         config = (
             "[Interface]\n"
-            f"PrivateKey = {private_key}\n"
-            "Address = 192.168.1.1/24\n"
-            "DNS = 1.1.1.1, 1.0.0.1\n\n"
+            "PrivateKey = CS/UQwV5cCjhGdH/1FQbSkRLvYU8Ha1xeTkHVg5rizI=\n"
+            "S1 = 0\n"
+            "S2 = 0\n"
+            "Jc = 120\n"
+            "Jmin = 23\n"
+            "Jmax = 911\n"
+            "H1 = 1\n"
+            "H2 = 2\n"
+            "H3 = 3\n"
+            "H4 = 4\n"
+            "MTU = 1280\n"
+            "Address = 172.16.0.2, 2606:4700:110:8a82:ae4c:ce7e:e5a6:a7fd\n"
+            "DNS = 1.1.1.1, 2606:4700:4700::1111, 1.0.0.1, 2606:4700:4700::1001\n\n"
             "[Peer]\n"
-            f"PublicKey = {public_key}\n"
-            "Endpoint = 162.159.192.1:2408\n"
-            "AllowedIPs = 0.0.0.0/0, ::/0"
+            "PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=\n"
+            "AllowedIPs = 0.0.0.0/0, ::/0\n"
+            "Endpoint = 162.159.192.227:894"
         )
         # Создаем временный файл
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".conf", mode="w") as f:
+        config_path = f"/tmp/warp_config_{user_id}.conf"
+        with open(config_path, "w") as f:
             f.write(config)
-            config_path = f.name
         return config_path
     except Exception as e:
         logger.error(f"Ошибка генерации конфигурации: {e}")
+        return None
+
+# Генерация HTML для сайта
+def generate_site():
+    try:
+        # Получаем статистику
+        active_users, banned_users = get_stats()
+        plot_path = plot_hourly_activity()
+        
+        # Создаем шаблон HTML
+        template_str = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>WARP Bot Statistics</title>
+            <link rel="stylesheet" href="styles.css">
+        </head>
+        <body>
+            <div class="container">
+                <h1>WARP Bot Statistics</h1>
+                <p><strong>Active Users:</strong> {{ active_users }}</p>
+                <p><strong>Banned Users:</strong> {{ banned_users }}</p>
+                <h2>Hourly Activity (Last 24 Hours)</h2>
+                {% if plot_path %}
+                <img src="hourly_activity.png" alt="Hourly Activity Graph">
+                {% else %}
+                <p>No activity data available for the last 24 hours.</p>
+                {% endif %}
+            </div>
+        </body>
+        </html>
+        """
+        # Сохраняем шаблон
+        template_path = "/tmp/templates/index.html"
+        os.makedirs(os.path.dirname(template_path), exist_ok=True)
+        with open(template_path, "w") as f:
+            f.write(template_str)
+        
+        # Рендерим HTML
+        template = env.get_template("index.html")
+        html_content = template.render(
+            active_users=active_users,
+            banned_users=banned_users,
+            plot_path=plot_path
+        )
+        
+        # Сохраняем HTML
+        html_path = os.path.join(STATIC_DIR, "index.html")
+        with open(html_path, "w") as f:
+            f.write(html_content)
+        
+        # Создаем CSS
+        css_content = """
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f0f0f0;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1, h2 {
+            color: #333;
+        }
+        p {
+            font-size: 16px;
+            color: #555;
+        }
+        img {
+            max-width: 100%;
+            height: auto;
+            margin-top: 20px;
+        }
+        """
+        css_path = os.path.join(STATIC_DIR, "styles.css")
+        with open(css_path, "w") as f:
+            f.write(css_content)
+        
+        return html_path
+    except Exception as e:
+        logger.error(f"Ошибка генерации сайта: {e}")
         return None
 
 # Создание клавиатуры с кнопками
@@ -202,7 +305,7 @@ def get_main_keyboard(is_admin_user=False):
             InlineKeyboardButton("Справка", callback_data="help"),
         ],
         [
-            InlineKeyboardButton("XrayVPN", url="https://astracat2022.github.io/vpngen"),
+            InlineKeyboardButton("XrayVPN", url="https://astracat2022.github.io/vpngen/generator"),
         ]
     ]
     if is_admin_user:
@@ -251,7 +354,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка отправки конфигурации: {e}")
             await query.message.reply_text(
-                "Ошибка при отправке конфигурации.", reply_markup=reply_markup
+                "Ошибка при отправки конфигурации.", reply_markup=reply_markup
             )
     elif query.data == "help":
         help_text = (
@@ -264,7 +367,8 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/ban <user_id> - Забанить\n"
             "/unban <user_id> - Разбанить\n"
             "/broadcast <сообщение> - Рассылка\n"
-            "/hourly_activity - График активности по часам"
+            "/hourly_activity - График активности по часам\n"
+            "/updatesite - Обновить статистику на сайте"
         )
         await query.message.reply_text(help_text, reply_markup=reply_markup)
     elif query.data == "hourly_activity" and is_admin_user:
@@ -278,7 +382,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             with open(plot_path, 'rb') as photo:
                 await query.message.reply_photo(photo=photo, reply_markup=reply_markup)
-            os.remove(plot_path)
+            # Не удаляем plot_path, так как он нужен для сайта
         except Exception as e:
             logger.error(f"Ошибка отправки графика: {e}")
             await query.message.reply_text("Ошибка при отправке графика.", reply_markup=reply_markup)
@@ -441,15 +545,36 @@ async def hourly_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         with open(plot_path, 'rb') as photo:
             await update.message.reply_photo(photo=photo, reply_markup=reply_markup)
-        os.remove(plot_path)
+        # Не удаляем plot_path, так как он нужен для сайта
     except Exception as e:
         logger.error(f"Ошибка отправки графика: {e}")
         await update.message.reply_text("Ошибка при отправке графика.", reply_markup=reply_markup)
+
+# Обработчик команды /updatesite
+async def update_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Эта команда доступна только администратору.")
+        return
+
+    html_path = generate_site()
+    reply_markup = get_main_keyboard(is_admin=True)
+    if not html_path or not os.path.exists(html_path):
+        await update.message.reply_text(
+            "Ошибка при генерации сайта.", reply_markup=reply_markup
+        )
+        return
+
+    await update.message.reply_text(
+        f"Сайт успешно обновлен: {html_path}\nПроверьте: https://warpxc.onrender.com",
+        reply_markup=reply_markup
+    )
 
 # Основная функция
 def main():
     try:
         init_db()
+        # Инициализируем сайт при запуске
+        generate_site()
         application = Application.builder().token(BOT_TOKEN).build()
 
         # Регистрация обработчиков
@@ -462,6 +587,7 @@ def main():
         application.add_handler(CommandHandler("unban", unban))
         application.add_handler(CommandHandler("broadcast", broadcast))
         application.add_handler(CommandHandler("hourly_activity", hourly_activity))
+        application.add_handler(CommandHandler("updatesite", update_site))
 
         # Запуск бота
         logger.info("Бот запущен.")
