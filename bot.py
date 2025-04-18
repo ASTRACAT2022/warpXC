@@ -3,6 +3,7 @@ import os
 import logging
 import argparse
 import shutil
+import asyncio
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -11,6 +12,7 @@ from telegram.ext import (
     CallbackQueryHandler,
     ContextTypes,
 )
+from telegram.error import Conflict
 import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import pandas as pd
@@ -303,6 +305,7 @@ def generate_site():
         if plot_path and os.path.exists(plot_path):
             shutil.copy(plot_path, REPO_STATIC_DIR)
 
+        logger.info(f"Сайт сгенерирован: {html_path}")
         return html_path
     except Exception as e:
         logger.error(f"Ошибка генерации сайта: {e}")
@@ -580,11 +583,18 @@ async def update_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 # Основная функция
-def main():
+async def main():
     try:
         init_db()
         generate_site()  # Инициализируем сайт при запуске
         application = Application.builder().token(BOT_TOKEN).build()
+
+        # Явно отключаем webhook
+        try:
+            await application.bot.delete_webhook(drop_pending_updates=True)
+            logger.info("Webhook успешно отключен.")
+        except Exception as e:
+            logger.error(f"Ошибка при отключении webhook: {e}")
 
         # Регистрация обработчиков
         application.add_handler(CommandHandler("start", start))
@@ -598,11 +608,33 @@ def main():
         application.add_handler(CommandHandler("hourly_activity", hourly_activity))
         application.add_handler(CommandHandler("updatesite", update_site))
 
-        # Запуск бота
-        logger.info("Бот запущен.")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        # Запуск бота с обработкой конфликтов
+        max_retries = 3
+        retry_delay = 5
+        for attempt in range(max_retries):
+            try:
+                await application.initialize()
+                await application.start()
+                logger.info("Бот запущен.")
+                await application.updater.start_polling(
+                    allowed_updates=Update.ALL_TYPES,
+                    drop_pending_updates=True
+                )
+                await application.run_polling()
+                break
+            except Conflict as e:
+                logger.warning(f"Конфликт getUpdates (попытка {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2  # Экспоненциальная задержка
+                else:
+                    logger.error("Не удалось устранить конфликт getUpdates. Завершение работы.")
+                    raise
+            except Exception as e:
+                logger.error(f"Ошибка запуска бота: {e}")
+                raise
     except Exception as e:
-        logger.error(f"Ошибка запуска бота: {e}")
+        logger.error(f"Критическая ошибка: {e}")
         raise
 
 if __name__ == "__main__":
@@ -618,4 +650,4 @@ if __name__ == "__main__":
         else:
             print("Failed to update site")
     else:
-        main()
+        asyncio.run(main())
