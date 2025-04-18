@@ -1,50 +1,50 @@
-импорт sqlite3
-импорт ос
-импорт лесозаготовка
-импорт асинчо
-импорт резьба
-из дотенв импорт загрузка_dotenv
-из телеграмма импорт Обновление, InlineKeyboardButton, InlineKeyboardMarkup
-из телеграмма.ext импорт (
- Приложение,
- КомандованиеХендлер,
- Обратный вызовQueryHandler,
- КонтекстТипы,
+import sqlite3
+import os
+import logging
+import asyncio
+import threading
+from dotenv import load_dotenv
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    CallbackQueryHandler,
+    ContextTypes,
 )
-из telegram.error импорт Конфликт, NetworkError, TelegramError
-импорт matplotlib.pyplot как плт
-из датавремя импорт датавремя, timedelta
-импорт панды как пд
-из колба импорт Flask, render_template_string, send_file
-импорт ио
+from telegram.error import Conflict, NetworkError, TelegramError
+import matplotlib.pyplot as plt
+from datetime import datetime, timedelta
+import pandas as pd
+from flask import Flask, render_template_string, send_file
+import io
 
-#Настройка Логирования
-журналирование.базовыйКонфигурация(
- формат="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
- level=logging.ИНФОРМАЦИЯ,
+# Настройка логирования
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
 )
-логгер = журналирование.getLogger(__имя__)
+logger = logging.getLogger(__name__)
 
-#Загрушка переборщица окружения
-загрузка_dotenv()
+# Загрузка переменных окружения
+load_dotenv()
 
-#Проверка Переменних окруженья
-BOT_TOKEN = os.гетенв("BOT_TOKEN")
-ADMIN_TELEGRAM_ID = ос.гетенв("ADMIN_TELEGRAM_ID")
-ПОРТ = ос.гетенв("ПОРТ", "5000")
+# Проверка переменных окружения
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")
+PORT = os.getenv("PORT", "5000")
 
-лесоруб.информация(f"Загруженное перелицо: BOT_TOKEN={'***' если БОТ_ТОКЕН другое 'не задан'}, "
-            f"ADMIN_TELEGRAM_ID={ADMIN_TELEGRAM_ID или 'не задан'}, "
-            f"ПОРТ={ПОРТ}")
+logger.info(f"Загруженные переменные: BOT_TOKEN={'***' if BOT_TOKEN else 'не задан'}, "
+            f"ADMIN_TELEGRAM_ID={ADMIN_TELEGRAM_ID or 'не задан'}, "
+            f"PORT={PORT}")
 
-если не БОТ_ТОКЕН:
- лесоруб.ошибка("Переменная любовь BOT_TOKEN ne zadana.")
-    поднимать Ошибка ценности("Ошибка: Переменная с уважением BOT_TOKEN ne zadana.")
-если не ADMIN_TELEGRAM_ID:
- лесоруб.ошибка("Переменная любовь ADMIN_TELEGRAM_ID не задана".)
-    поднимать Ошибка ценности("Ошибка: Переменная с уважением ADMIN_TELEGRAM_ID не задана".)
+if not BOT_TOKEN:
+    logger.error("Переменная окружения BOT_TOKEN не задана.")
+    raise ValueError("Ошибка: Переменная окружения BOT_TOKEN не задана.")
+if not ADMIN_TELEGRAM_ID:
+    logger.error("Переменная окружения ADMIN_TELEGRAM_ID не задана.")
+    raise ValueError("Ошибка: Переменная окружения ADMIN_TELEGRAM_ID не задана.")
 
-попробуй:
+try:
     ADMIN_TELEGRAM_ID = int(ADMIN_TELEGRAM_ID)
 except ValueError:
     logger.error("ADMIN_TELEGRAM_ID должен быть числом.")
@@ -567,51 +567,51 @@ async def run_bot():
                 logger.info("Бот успешно запущен.")
                 await application.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True
+ drop_pending_updates=Истинный
                 )
- лесоруб.информация("Полинг нахат".)
- ждатье приложенье.заппусти_опрос()
- перерёровые
- кроме Конфликт как э:
- лесоруб.предусмотрительность(f "Обновление Кофликта" (попытка {попытка + 1}/{макс_ретриес}): {e}")
- esli popytka < max_retries - 1:
- ждать асинсио.пататт(retry_delay)
+ лесоруб.информация("Поллинг нахат".)
+                ждать приложение.запустить_опрос()
+                перерыв
+            кроме Конфликт как э:
+ лесоруб.предупреждение(f"Cohnflickt getUpdates (попытка {попытка + 1}/{макс_ретриес}): {e}")
+                если попытка < max_retries - 1:
+                    ждать асинсио.спать(retry_delay)
  retry_delay *= 2
- другое:
- лесоруб.очибка("Не удаляйте об обновлевых". Завершённое работы.)
- поднимать
- крамое СетьОшибка как э:
- льесоруб.очибка(f "Сетёваа вышибка при запорожье боте: {e}")
- esli popytka < max_retries - 1:
- дждаты асинсио.спати(retry_delay)
+                другое:
+ лесоруб.ошибка("Не удаляйтесь об обновлении. Завершённые работы.)
+                    поднимать
+            кроме СетьОшибка как э:
+ лесоруб.ошибка(f"Сетёвая вышибка при запорожской боте: {e}")
+                если попытка < max_retries - 1:
+                    ждать асинсио.спать(retry_delay)
  retry_delay *= 2
- другое:
- льесоруб.очибка("Сетёва вышибка не устранена". Завершённое работы.)
- поднимать
- crome TelegramОшибка как э:
- льесоруб.очибка(f "Ошибка Telegram API": {e}")
- поднимать
- crome isclulufcheniе kak ae:
- льесоруб.очибка(f "Нейзнеобке обке" pri zaporogskom бобота: {e}")
- поднимать
- crome isclulufcheniе kak ae:
- llesorub.oshibka(f "Критическа рыба в run_bot: {e}")
- поднимать
+                другое:
+ лесоруб.ошибка("Сетёвая ошибка не устранена". Завершённые работы.)
+                    поднимать
+            кроме TelegramОшибка как э:
+ лесоруб.ошибка(f "Ошибка Telegram API": {e}")
+                поднимать
+            кроме Исключение как э:
+ лесоруб.ошибка(f "Неизвещение об обке" при запорожском бота: {e}")
+                поднимать
+    кроме Исключение как э:
+ лесоруб.ошибка(f "Критическая ошибка в run_bot: {e}")
+        поднимать
 
-#Запуск Фласк и Телеграмма-бота
-деф основой():
- llesorub.ynformaciya("Запуская прилежание...")
- #Запуском Telegram-bott в отдельном потоке
- попробуй:
- bot_thread = opotokovаya peredachа.Nitty(celly=liambda: asincioga.begaty(zappoustitj_bot()))
- bot_thread.demon = Istynnyy
- bot_thread.natshaty()
- лесоруб.инфоэрмация ("Поток Telegram-bota запретил заготовку")
- crome isclulufcheniе kak ae:
- llesorub.oshibka(f "Ошибка" pri zatopoke bota: {e}")
+#Запуск Фласк и Telegram-bota
+деф основной():
+ лесоруб.информация("Запуская прилежание...")
+    #Запуском Telegram-bott в отдельном потоке
+    попробуй:
+ bot_thread = потоковая передача.Нить(цель=лямбда: асинсио.бегать(запустить_bot()))
+ bot_thread.демон = Истинный
+ bot_thread.начать()
+ лесоруб.информация("Поток Telegram-bota запретил заготовку".)
+    кроме Исключение как э:
+ лесоруб.ошибка(f "Ошибка" при запоке бота: {e}")
 
- #Запуском Фляга (для локалного тетирования, гуникорн используетсья на Рендере)
- prilogeniе.begaty(хост='0,0,0,0', port=int(PORT))
+    #Запуском Фляга (для локалного tetéstirovaniya, гуникорн используетсья на Рендере)
+ приложение.бегать(хост='0,0,0,0', порт=инт(ПОРТ))
 
-esli __name__ == "__main__":
- основого()
+если __name__ == "__main__":
+    основной()
