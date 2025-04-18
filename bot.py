@@ -1,6 +1,8 @@
 import sqlite3
 import os
 import logging
+import argparse
+import shutil
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -13,7 +15,6 @@ import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import pandas as pd
 from jinja2 import Environment, FileSystemLoader
-import shutil
 
 # Настройка логирования
 logging.basicConfig(
@@ -39,12 +40,16 @@ try:
 except ValueError:
     raise ValueError("Ошибка: ADMIN_TELEGRAM_ID должен быть числом.")
 
-# Папка для статических файлов сайта
+# Папки для статических файлов и шаблонов
 STATIC_DIR = "/tmp/static"
+TEMPLATE_DIR = "/tmp/templates"
+REPO_STATIC_DIR = os.path.join(os.getcwd(), "static")
 os.makedirs(STATIC_DIR, exist_ok=True)
+os.makedirs(TEMPLATE_DIR, exist_ok=True)
+os.makedirs(REPO_STATIC_DIR, exist_ok=True)
 
 # Инициализация Jinja2
-env = Environment(loader=FileSystemLoader('/tmp/templates'))
+env = Environment(loader=FileSystemLoader(TEMPLATE_DIR))
 
 # Инициализация базы данных
 def init_db():
@@ -87,6 +92,7 @@ def register_user(user_id, username):
         )
         conn.commit()
         logger.info(f"Пользователь {username} (ID: {user_id}) зарегистрирован.")
+        generate_site()  # Обновляем сайт после регистрации
     except sqlite3.Error as e:
         logger.error(f"Ошибка регистрации пользователя: {e}")
     finally:
@@ -132,6 +138,7 @@ def set_ban_status(user_id, ban_status):
         )
         conn.commit()
         logger.info(f"Пользователь ID {user_id} {'забанен' if ban_status else 'разбанен'}.")
+        generate_site()  # Обновляем сайт после изменения статуса
     except sqlite3.Error as e:
         logger.error(f"Ошибка изменения статуса бана: {e}")
     finally:
@@ -199,7 +206,6 @@ def generate_warp_config(user_id):
             "AllowedIPs = 0.0.0.0/0, ::/0\n"
             "Endpoint = 162.159.192.227:894"
         )
-        # Создаем временный файл
         config_path = f"/tmp/warp_config_{user_id}.conf"
         with open(config_path, "w") as f:
             f.write(config)
@@ -214,7 +220,7 @@ def generate_site():
         # Получаем статистику
         active_users, banned_users = get_stats()
         plot_path = plot_hourly_activity()
-        
+
         # Создаем шаблон HTML
         template_str = """
         <!DOCTYPE html>
@@ -241,11 +247,10 @@ def generate_site():
         </html>
         """
         # Сохраняем шаблон
-        template_path = "/tmp/templates/index.html"
-        os.makedirs(os.path.dirname(template_path), exist_ok=True)
+        template_path = os.path.join(TEMPLATE_DIR, "index.html")
         with open(template_path, "w") as f:
             f.write(template_str)
-        
+
         # Рендерим HTML
         template = env.get_template("index.html")
         html_content = template.render(
@@ -253,12 +258,12 @@ def generate_site():
             banned_users=banned_users,
             plot_path=plot_path
         )
-        
+
         # Сохраняем HTML
         html_path = os.path.join(STATIC_DIR, "index.html")
         with open(html_path, "w") as f:
             f.write(html_content)
-        
+
         # Создаем CSS
         css_content = """
         body {
@@ -291,7 +296,13 @@ def generate_site():
         css_path = os.path.join(STATIC_DIR, "styles.css")
         with open(css_path, "w") as f:
             f.write(css_content)
-        
+
+        # Копируем файлы в static/ для деплоя
+        shutil.copy(html_path, REPO_STATIC_DIR)
+        shutil.copy(css_path, REPO_STATIC_DIR)
+        if plot_path and os.path.exists(plot_path):
+            shutil.copy(plot_path, REPO_STATIC_DIR)
+
         return html_path
     except Exception as e:
         logger.error(f"Ошибка генерации сайта: {e}")
@@ -354,7 +365,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"Ошибка отправки конфигурации: {e}")
             await query.message.reply_text(
-                "Ошибка при отправки конфигурации.", reply_markup=reply_markup
+                "Ошибка при отправке конфигурации.", reply_markup=reply_markup
             )
     elif query.data == "help":
         help_text = (
@@ -382,7 +393,6 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         try:
             with open(plot_path, 'rb') as photo:
                 await query.message.reply_photo(photo=photo, reply_markup=reply_markup)
-            # Не удаляем plot_path, так как он нужен для сайта
         except Exception as e:
             logger.error(f"Ошибка отправки графика: {e}")
             await query.message.reply_text("Ошибка при отправке графика.", reply_markup=reply_markup)
@@ -545,7 +555,6 @@ async def hourly_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         with open(plot_path, 'rb') as photo:
             await update.message.reply_photo(photo=photo, reply_markup=reply_markup)
-        # Не удаляем plot_path, так как он нужен для сайта
     except Exception as e:
         logger.error(f"Ошибка отправки графика: {e}")
         await update.message.reply_text("Ошибка при отправке графика.", reply_markup=reply_markup)
@@ -565,7 +574,8 @@ async def update_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     await update.message.reply_text(
-        f"Сайт успешно обновлен: {html_path}\nПроверьте: https://warpxc.onrender.com",
+        f"Сайт успешно обновлен: {html_path}\nПроверьте: https://warpxc.onrender.com\n"
+        "Для публикации запустите GitHub Actions workflow.",
         reply_markup=reply_markup
     )
 
@@ -573,8 +583,7 @@ async def update_site(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     try:
         init_db()
-        # Инициализируем сайт при запуске
-        generate_site()
+        generate_site()  # Инициализируем сайт при запуске
         application = Application.builder().token(BOT_TOKEN).build()
 
         # Регистрация обработчиков
@@ -597,4 +606,16 @@ def main():
         raise
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--update-site", action="store_true", help="Update site files")
+    args = parser.parse_args()
+
+    if args.update_site:
+        init_db()
+        html_path = generate_site()
+        if html_path:
+            print(f"Site updated: {html_path}")
+        else:
+            print("Failed to update site")
+    else:
+        main()
