@@ -1,4 +1,6 @@
 .env
 *.png
 *.db
+*.conf
 __pycache__/
+warp_bot.db
