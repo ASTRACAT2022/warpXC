@@ -16,8 +16,20 @@ import numpy as np
 
 # Загрузка переменных из .env
 load_dotenv()
+
+# Проверка переменных окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID"))
+ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")
+
+if not BOT_TOKEN:
+    raise ValueError("Ошибка: Переменная окружения BOT_TOKEN не задана.")
+if not ADMIN_TELEGRAM_ID:
+    raise ValueError("Ошибка: Переменная окружения ADMIN_TELEGRAM_ID не задана.")
+
+try:
+    ADMIN_TELEGRAM_ID = int(ADMIN_TELEGRAM_ID)
+except ValueError:
+    raise ValueError("Ошибка: ADMIN_TELEGRAM_ID должен быть числом.")
 
 # Настройка логирования
 logging.basicConfig(
@@ -107,7 +119,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Обработчик команды /getconfig и кнопки
 async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+    if hasattr(update, 'callback_query'):
+        user = update.callback_query.from_user
+        message = update.callback_query.message
+    else:
+        user = update.effective_user
+        message = update.message
+
     conn = sqlite3.connect("warp_bot.db")
     c = conn.cursor()
     
@@ -115,7 +133,7 @@ async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c.execute("SELECT is_banned FROM users WHERE telegram_id = ?", (user.id,))
     result = c.fetchone()
     if result and result[0] == 1:
-        await update.message.reply_text("Вы забанены и не можете получать конфигурации.")
+        await message.reply_text("Вы забанены и не можете получать конфигурации.")
         conn.close()
         return
     
@@ -125,7 +143,7 @@ async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if last_config_time:
         last_time = datetime.fromisoformat(last_config_time)
         if datetime.now() - last_time < timedelta(hours=24):
-            await update.message.reply_text(
+            await message.reply_text(
                 "Вы можете запрашивать новую конфигурацию раз в 24 часа. Попробуйте позже."
             )
             conn.close()
@@ -149,7 +167,7 @@ async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     with open(f"config_{user.id}.conf", "w") as f:
         f.write(config)
     with open(f"config_{user.id}.conf", "rb") as f:
-        await update.message.reply_document(document=f, filename="warp.conf")
+        await message.reply_document(document=f, filename="warp.conf")
     os.remove(f"config_{user.id}.conf")
 
 # Обработчик кнопок
@@ -169,7 +187,7 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text(help_message, reply_markup=get_user_keyboard())
 
 # Обработчик команды /stats (для админа)
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats(update: Update, context: ContextTypes):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
@@ -231,7 +249,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     os.remove('configs_stats.png')
 
 # Обработчик команды /users (для админа)
-async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def users(update: Update, context: ContextTypes):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
@@ -255,7 +273,7 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(users_message)
 
 # Обработчик команды /ban (для админа)
-async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ban(update: Update, context: ContextTypes):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
@@ -271,12 +289,16 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c.execute("UPDATE users SET is_banned = 1 WHERE telegram_id = ?", (target_id,))
         conn.commit()
         conn.close()
+        bot = context.bot
+        await bot.send_message(chat_id=target_id, text="Вы были забанены администратором и больше не можете получать конфигурации.")
         await update.message.reply_text(f"Пользователь {target_id} забанен.")
     except ValueError:
         await update.message.reply_text("Неверный формат Telegram ID.")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка при попытке забанить пользователя: {e}")
 
 # Обработчик команды /unban (для админа)
-async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def unban(update: Update, context: ContextTypes):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
@@ -292,58 +314,62 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c.execute("UPDATE users SET is_banned = 0 WHERE telegram_id = ?", (target_id,))
         conn.commit()
         conn.close()
+        bot = context.bot
+        await bot.send_message(chat_id=target_id, text="Вы были разбанены администратором и теперь можете получать конфигурации.")
         await update.message.reply_text(f"Пользователь {target_id} разбанен.")
     except ValueError:
         await update.message.reply_text("Неверный формат Telegram ID.")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка при попытке разбанить пользователя: {e}")
 
 # Обработчик команды /broadcast (для админа)
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Эта команда доступна только администратору.")
-        return
+асинхронизация деф трансляция(обновление: Обновить, контекст: ContextTypes):
+    если не is_admin(обновление.эффективный_пользователь.идентификатор):
+        ждать обновление.сообщение.ответить_text("Эта Команда пришла в себя и стала администратором".)
+        возврат
     
-    if not context.args:
-        await update.message.reply_text("Укажите сообщение для рассылки: /broadcast <сообщение>")
-        return
+    если не контекст.аргс:
+        ждать обновление.сообщение.ответить_text("Укажитская заготовка dllia ratsyclki: /вещание <soboniеniе>")
+        возврат
     
-    message = " ".join(context.args)
-    conn = sqlite3.connect("warp_bot.db")
-    c = conn.cursor()
-    c.execute("SELECT telegram_id FROM users WHERE is_banned = 0")
-    users = c.fetchall()
-    conn.close()
+ сообщение = "".присоединяться(контекст.аргс)
+ conn = sqlite3.подключить("warp_bot.db")
+ c = конн.курсор()
+ с.выполнить("ВЫБЕРИТЕ telegram_id ОТ пользователей ГДЕ_запрещено = 0")
+ пользователи = c.фетчелл()
+ конн.закрывать()
     
-    for user in users:
-        try:
-            await context.bot.send_message(chat_id=user[0], text=message)
-        except Exception as e:
-            logger.error(f"Ошибка отправки сообщения пользователю {user[0]}: {e}")
+    для пользователь в пользователи:
+        попробуй:
+            ждать контекст.бот.отправить_сообщение(чат_id=user[0], text=message)
+        кроме Исключение как э:
+ лесоруб.ошибка(f "Ошибка" потправки сообществовала {пользователь[0]}: {e}")
     
-    await update.message.reply_text("Рассылка завершена.")
+    ждать обновление.сообщение.ответить_text("Рассылка завершена".)
 
-# Обработчик ошибок
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Update {update} caused error {context.error}")
+#Обработик ошибок
+асинхронизация деф ошибка_handler(обновление: Обновить, контекст: ContextTypes):
+ лесоруб.ошибка(f"Обновить {обновлять} причиной ошибки {контекст.ошибка}")
 
-def main():
+деф основной():
     init_db()
-    application = Application.builder().token(BOT_TOKEN).build()
+ приложение = Приложение.строитель().жетон(БОТ_ТОКЕН).строить()
     
-    # Регистрация обработчиков
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("getconfig", get_config))
-    application.add_handler(CommandHandler("stats", stats))
-    application.add_handler(CommandHandler("users", users))
-    application.add_handler(CommandHandler("ban", ban))
-    application.add_handler(CommandHandler("unban", unban))
-    application.add_handler(CommandHandler("broadcast", broadcast))
-    application.add_handler(CallbackQueryHandler(button_handler))
+    #Регистрация обработчиков
+ приложение.добавить_handler(КомандованиеHandler("старт", начинай))
+ приложение.добавить_handler(КомандованиеHandler("getconfig", get_config))
+ приложение.добавить_handler(КомандованиеHandler("статс", статистика))
+ приложение.добавить_handler(КомандованиеHandler("пользователи", пользователи))
+ приложение.добавить_handler(КомандованиеHandler("бан", запретить))
+ приложение.добавить_handler(КомандованиеHandler("унбан", разбан))
+ приложение.добавить_handler(КомандованиеHandler("трансляция", трансляция))
+ приложение.добавить_handler(Обратный вызовQueryHandler(кнопка_охотник))
     
-    # Обработчик ошибок
-    application.add_error_handler(error_handler)
+    #Обработик ошибок
+ приложение.добавить_ошибка_обработчик(ошибка_handler)
     
-    # Запуск бота
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
+    #Запуск Бота
+ приложение.запустить_опрос(разрешено_обновления=Обновить.ВСЕ_ТИПЫ)
 
-if __name__ == "__main__":
-    main()
+если __name__ == "__main__":
+    основной()
