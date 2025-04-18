@@ -321,53 +321,53 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Ошибка при попытке разбанить пользователя: {e}")
 
 # Обработчик команды /broadcast (для админа)
-асинхронизация деф трансляция(обновление: Обновить, контекст: ContextTypes.ТИП ПО УМОЛЧАНИЮ_TYPE):
-    если не is_admin(обновление.эффективный_пользователь.идентификатор):
-        ждать обновление.сообщение.ответить_text("Эта Команда пришла в себя и стала администратором".)
-        возврат
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id):
+        await update.message.reply_text("Эта команда доступна только администратору.")
+        return
     
-    если не контекст.аргс:
-        ждать обновление.сообщение.ответить_text("Укажитская заготовка dllia ratsyclki: /вещание <soboniеniе>")
-        возврат
+    if not context.args:
+        await update.message.reply_text("Укажите сообщение для рассылки: /broadcast <сообщение>")
+        return
     
- сообщение = "".присоединяться(контекст.аргс)
- conn = sqlite3.подключить("warp_bot.db")
- c = конн.курсор()
- с.выполнить("ВЫБЕРИТЕ telegram_id ОТ пользователей ГДЕ_запрещено = 0")
- пользователи = c.фетчелл()
- конн.закрывать()
+    message = " ".join(context.args)
+    conn = sqlite3.connect("warp_bot.db")
+    c = conn.cursor()
+    c.execute("SELECT telegram_id FROM users WHERE is_banned = 0")
+    users = c.fetchall()
+    conn.close()
     
-    для пользователь в пользователи:
-        попробуй:
-            ждать контекст.бот.отправить_сообщение(чат_id=user[0], text=message)
-        кроме Исключение как э:
- лесоруб.ошибка(f "Ошибка" потправки сообществовала {пользователь[0]}: {e}")
+    for user in users:
+        try:
+            await context.bot.send_message(chat_id=user[0], text=message)
+        except Exception as e:
+            logger.error(f"Ошибка отправки сообщения пользователю {user[0]}: {e}")
     
-    ждать обновление.сообщение.ответить_text("Рассылка завершена".)
+    await update.message.reply_text("Рассылка завершена.")
 
-#Обработик ошибок
-асинхронизация деф ошибка_handler(обновление: Обновить, контекст: ContextTypes.ТИП ПО УМОЛЧАНИЮ_TYPE):
- лесоруб.ошибка(f"Обновить {обновлять} причиной ошибки {контекст.ошибка}")
+# Обработчик ошибок
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update {update} caused error {context.error}")
 
-деф основной():
+def main():
     init_db()
- приложение = Приложение.строитель().жетон(БОТ_ТОКЕН).строить()
+    application = Application.builder().token(BOT_TOKEN).build()
     
-    #Регистрация обработчиков
- приложение.добавить_handler(КомандованиеHandler("старт", начинай))
- приложение.добавить_handler(КомандованиеHandler("getconfig", get_config))
- приложение.добавить_handler(КомандованиеHandler("статс", статистика))
- приложение.добавить_handler(КомандованиеHandler("пользователи", пользователи))
- приложение.добавить_handler(КомандованиеHandler("бан", запретить))
- приложение.добавить_handler(КомандованиеHandler("унбан", разбан))
- приложение.добавить_handler(КомандованиеHandler("трансляция", трансляция))
- приложение.добавить_handler(Обратный вызовQueryHandler(кнопка_охотник))
+    # Регистрация обработчиков
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("getconfig", get_config))
+    application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("users", users))
+    application.add_handler(CommandHandler("ban", ban))
+    application.add_handler(CommandHandler("unban", unban))
+    application.add_handler(CommandHandler("broadcast", broadcast))
+    application.add_handler(CallbackQueryHandler(button_handler))
     
-    #Обработик ошибок
- приложение.добавить_ошибка_обработчик(ошибка_handler)
+    # Обработчик ошибок
+    application.add_error_handler(error_handler)
     
-    #Запуск Бота
- приложение.запустить_опрос(разрешено_обновления=Обновить.ВСЕ_ТИПЫ)
+    # Запуск бота
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
-если __name__ == "__main__":
-    основной()
+if __name__ == "__main__":
+    main()
