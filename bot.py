@@ -132,7 +132,6 @@ def set_ban_status(user_id, ban_status):
 def get_hourly_activity():
     try:
         conn = sqlite3.connect("warp_bot.db")
-        # Предполагаем, что поле first_seen содержит временные метки действий
         query = """
             SELECT strftime('%H', first_seen) as hour, COUNT(*) as activity_count
             FROM users
@@ -140,7 +139,6 @@ def get_hourly_activity():
             GROUP BY hour
             ORDER BY hour
         """
-        # Период анализа: последние 24 часа
         start_time = datetime.now() - timedelta(days=1)
         df = pd.read_sql_query(query, conn, params=(start_time,))
         return df
@@ -156,7 +154,6 @@ def plot_hourly_activity():
     if df.empty:
         return None
 
-    # Создаем график
     plt.figure(figsize=(10, 6))
     plt.bar(df['hour'], df['activity_count'], color='skyblue')
     plt.xlabel('Час дня')
@@ -165,48 +162,97 @@ def plot_hourly_activity():
     plt.xticks(range(24))
     plt.grid(True, axis='y', linestyle='--', alpha=0.7)
 
-    # Сохраняем график как изображение
     plot_path = "hourly_activity.png"
     plt.savefig(plot_path, bbox_inches='tight')
     plt.close()
     return plot_path
+
+# Создание клавиатуры с кнопками
+def get_main_keyboard(is_admin_user=False):
+    keyboard = [
+        [
+            InlineKeyboardButton("Получить конфиг", callback_data="get_config"),
+            InlineKeyboardButton("Справка", callback_data="help"),
+        ],
+        [
+            InlineKeyboardButton("XrayVPN", url="https://astracat2022.github.io/vpngen/generator"),
+        ]
+    ]
+    if is_admin_user:
+        keyboard.append([InlineKeyboardButton("Активность по часам", callback_data="hourly_activity")])
+    return InlineKeyboardMarkup(keyboard)
 
 # Обработчик команды /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     register_user(user.id, user.username)
 
-    keyboard = [
-        [
-            InlineKeyboardButton("Получить конфиг", callback_data="get_config"),
-            InlineKeyboardButton("Справка", callback_data="help"),
-        ]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text(
-        "Привет! Я бот для управления конфигурациями WARP. Выбери действие:",
-        reply_markup=reply_markup,
+    is_admin_user = is_admin(user.id)
+    reply_markup = get_main_keyboard(is_admin_user)
+    welcome_message = (
+        f"Привет, {user.first_name or 'пользователь'}! 👋\n"
+        f"Ваш Telegram ID: {user.id}\n"
+        "Я бот для управления конфигурациями WARP. Выбери действие:"
     )
+    await update.message.reply_text(welcome_message, reply_markup=reply_markup)
 
 # Обработчик кнопок
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    user = query.from_user
+    is_admin_user = is_admin(user.id)
+    reply_markup = get_main_keyboard(is_admin_user)
+
     await query.answer()
 
     if query.data == "get_config":
-        await query.message.reply_text(
-            "Вот пример конфигурации WARP:\n\n[Interface]\nPrivateKey = your_private_key\nAddress = 192.168.1.1\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = peer_public_key\nEndpoint = 162.159.192.1:2408\nAllowedIPs = 0.0.0.0/0"
+        config_text = (
+            "Вот пример конфигурации WARP:\n\n"
+            "[Interface]\nPrivateKey = your_private_key\nAddress = 192.168.1.1\nDNS = 1.1.1.1\n\n"
+            "[Peer]\nPublicKey = peer_public_key\nEndpoint = 162.159.192.1:2408\nAllowedIPs = 0.0.0.0/0"
         )
+        await query.message.reply_text(config_text, reply_markup=reply_markup)
     elif query.data == "help":
-        await query.message.reply_text(
-            "Я бот для управления WARP. Доступные команды:\n/start - Начать работу\n/getconfig - Получить конфигурацию\nДля админов:\n/stats - Статистика\n/users - Список пользователей\n/ban <user_id> - Забанить\n/unban <user_id> - Разбанить\n/broadcast <сообщение> - Рассылка\n/hourly_activity - График активности по часам"
+        help_text = (
+            "Я бот для управления WARP. Доступные команды:\n"
+            "/start - Начать работу\n"
+            "/getconfig - Получить конфигурацию\n"
+            "Для админов:\n"
+            "/stats - Статистика\n"
+            "/users - Список пользователей\n"
+            "/ban <user_id> - Забанить\n"
+            "/unban <user_id> - Разбанить\n"
+            "/broadcast <сообщение> - Рассылка\n"
+            "/hourly_activity - График активности по часам"
         )
+        await query.message.reply_text(help_text, reply_markup=reply_markup)
+    elif query.data == "hourly_activity" and is_admin_user:
+        plot_path = plot_hourly_activity()
+        if not plot_path or not os.path.exists(plot_path):
+            await query.message.reply_text(
+                "Не удалось создать график. Нет данных за последние 24 часа.",
+                reply_markup=reply_markup,
+            )
+            return
+        try:
+            with open(plot_path, 'rb') as photo:
+                await query.message.reply_photo(photo=photo, reply_markup=reply_markup)
+            os.remove(plot_path)
+        except Exception as e:
+            logger.error(f"Ошибка отправки графика: {e}")
+            await query.message.reply_text("Ошибка при отправке графика.", reply_markup=reply_markup)
 
 # Обработчик команды /getconfig
 async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Вот пример конфигурации WARP:\n\n[Interface]\nPrivateKey = your_private_key\nAddress = 192.168.1.1\nDNS = 1.1.1.1\n\n[Peer]\nPublicKey = peer_public_key\nEndpoint = 162.159.192.1:2408\nAllowedIPs = 0.0.0.0/0"
+    user = update.effective_user
+    is_admin_user = is_admin(user.id)
+    reply_markup = get_main_keyboard(is_admin_user)
+    config_text = (
+        "Вот пример конфигурации WARP:\n\n"
+        "[Interface]\nPrivateKey = your_private_key\nAddress = 192.168.1.1\nDNS = 1.1.1.1\n\n"
+        "[Peer]\nPublicKey = peer_public_key\nEndpoint = 162.159.192.1:2408\nAllowedIPs = 0.0.0.0/0"
     )
+    await update.message.reply_text(config_text, reply_markup=reply_markup)
 
 # Обработчик команды /stats
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -215,8 +261,10 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     active_users, banned_users = get_stats()
+    reply_markup = get_main_keyboard(is_admin=True)
     await update.message.reply_text(
-        f"Статистика:\nАктивных пользователей: {active_users}\nЗабаненных пользователей: {banned_users}"
+        f"Статистика:\nАктивных пользователей: {active_users}\nЗабаненных пользователей: {banned_users}",
+        reply_markup=reply_markup,
     )
 
 # Обработчик команды /users
@@ -227,14 +275,14 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user_list = get_users()
     if not user_list:
-        await update.message.reply_text("Пользователи не найдены.")
+        await update.message.reply_text("Пользователи не найдены.", reply_markup=get_main_keyboard(is_admin=True))
         return
 
     response = "Список пользователей:\n"
     for user in user_list:
         status = "Забанен" if user[2] else "Активен"
         response += f"ID: {user[0]}, Username: {user[1] or 'N/A'}, Статус: {status}\n"
-    await update.message.reply_text(response)
+    await update.message.reply_text(response, reply_markup=get_main_keyboard(is_admin=True))
 
 # Обработчик команды /ban
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -245,8 +293,10 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = int(context.args[0])
         set_ban_status(user_id, 1)
-        await update.message.reply_text(f"Пользователь ID {user_id} забанен.")
-        # Уведомление пользователю
+        await update.message.reply_text(
+            f"Пользователь ID {user_id} забанен.",
+            reply_markup=get_main_keyboard(is_admin=True),
+        )
         try:
             await context.bot.send_message(
                 chat_id=user_id,
@@ -255,7 +305,10 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.warning(f"Не удалось уведомить пользователя ID {user_id}: {e}")
     except (IndexError, ValueError):
-        await update.message.reply_text("Использование: /ban <user_id>")
+        await update.message.reply_text(
+            "Использование: /ban <user_id>",
+            reply_markup=get_main_keyboard(is_admin=True),
+        )
 
 # Обработчик команды /unban
 async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -266,8 +319,10 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         user_id = int(context.args[0])
         set_ban_status(user_id, 0)
-        await update.message.reply_text(f"Пользователь ID {user_id} разбанен.")
-        # Уведомление пользователю
+        await update.message.reply_text(
+            f"Пользователь ID {user_id} разбанен.",
+            reply_markup=get_main_keyboard(is_admin=True),
+        )
         try:
             await context.bot.send_message(
                 chat_id=user_id,
@@ -276,7 +331,10 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.warning(f"Не удалось уведомить пользователя ID {user_id}: {e}")
     except (IndexError, ValueError):
-        await update.message.reply_text("Использование: /unban <user_id>")
+        await update.message.reply_text(
+            "Использование: /unban <user_id>",
+            reply_markup=get_main_keyboard(is_admin=True),
+        )
 
 # Обработчик команды /broadcast
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -285,7 +343,10 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        await update.message.reply_text("Использование: /broadcast <сообщение>")
+        await update.message.reply_text(
+            "Использование: /broadcast <сообщение>",
+            reply_markup=get_main_keyboard(is_admin=True),
+        )
         return
 
     message = " ".join(context.args)
@@ -302,7 +363,8 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.warning(f"Не удалось отправить сообщение пользователю ID {user[0]}: {e}")
     await update.message.reply_text(
-        f"Рассылка завершена. Сообщение отправлено {success_count} пользователям."
+        f"Рассылка завершена. Сообщение отправлено {success_count} пользователям.",
+        reply_markup=get_main_keyboard(is_admin=True),
     )
 
 # Обработчик команды /hourly_activity
@@ -312,17 +374,21 @@ async def hourly_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     plot_path = plot_hourly_activity()
+    reply_markup = get_main_keyboard(is_admin=True)
     if not plot_path or not os.path.exists(plot_path):
-        await update.message.reply_text("Не удалось создать график. Нет данных за последние 24 часа.")
+        await update.message.reply_text(
+            "Не удалось создать график. Нет данных за последние 24 часа.",
+            reply_markup=reply_markup,
+        )
         return
 
     try:
         with open(plot_path, 'rb') as photo:
-            await update.message.reply_photo(photo=photo)
-        os.remove(plot_path)  # Удаляем временный файл
+            await update.message.reply_photo(photo=photo, reply_markup=reply_markup)
+        os.remove(plot_path)
     except Exception as e:
         logger.error(f"Ошибка отправки графика: {e}")
-        await update.message.reply_text("Ошибка при отправке графика.")
+        await update.message.reply_text("Ошибка при отправке графика.", reply_markup=reply_markup)
 
 # Основная функция
 def main():
