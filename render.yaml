@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: warpxc
+    env: python
+    plan: free 
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py 
+    repo: https://github.com/ASTRACAT2022/warpXC
+    branch: main
+    autoDeploy: true
