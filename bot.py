@@ -567,51 +567,51 @@ async def run_bot():
                 logger.info("Бот успешно запущен.")
                 await application.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
- drop_pending_updates=Истинный
+                    drop_pending_updates=True
                 )
- лесоруб.информация("Поллинг нахат".)
-                ждать приложение.запустить_опрос()
-                перерыв
-            кроме Конфликт как э:
- лесоруб.предупреждение(f"Cohnflickt getUpdates (попытка {попытка + 1}/{макс_ретриес}): {e}")
-                если попытка < max_retries - 1:
-                    ждать асинсио.спать(retry_delay)
- retry_delay *= 2
-                другое:
- лесоруб.ошибка("Не удаляйтесь об обновлении. Завершённые работы.)
-                    поднимать
-            кроме СетьОшибка как э:
- лесоруб.ошибка(f"Сетёвая вышибка при запорожской боте: {e}")
-                если попытка < max_retries - 1:
-                    ждать асинсио.спать(retry_delay)
- retry_delay *= 2
-                другое:
- лесоруб.ошибка("Сетёвая ошибка не устранена". Завершённые работы.)
-                    поднимать
-            кроме TelegramОшибка как э:
- лесоруб.ошибка(f "Ошибка Telegram API": {e}")
-                поднимать
-            кроме Исключение как э:
- лесоруб.ошибка(f "Неизвещение об обке" при запорожском бота: {e}")
-                поднимать
-    кроме Исключение как э:
- лесоруб.ошибка(f "Критическая ошибка в run_bot: {e}")
-        поднимать
+                logger.info("Polling начат.")
+                await application.run_polling()
+                break
+            except Conflict as e:
+                logger.warning(f"Конфликт getUpdates (попытка {attempt + 1}/{max_retries}): {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.error("Не удалось устранить конфликт getUpdates. Завершение работы.")
+                    raise
+            except NetworkError as e:
+                logger.error(f"Сетевая ошибка при запуске бота: {e}")
+                if attempt < max_retries - 1:
+                    await asyncio.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.error("Сетевая ошибка не устранена. Завершение работы.")
+                    raise
+            except TelegramError as e:
+                logger.error(f"Ошибка Telegram API: {e}")
+                raise
+            except Exception as e:
+                logger.error(f"Неизвестная ошибка при запуске бота: {e}")
+                raise
+    except Exception as e:
+        logger.error(f"Критическая ошибка в run_bot: {e}")
+        raise
 
-#Запуск Фласк и Telegram-bota
-деф основной():
- лесоруб.информация("Запуская прилежание...")
-    #Запуском Telegram-bott в отдельном потоке
-    попробуй:
- bot_thread = потоковая передача.Нить(цель=лямбда: асинсио.бегать(запустить_bot()))
- bot_thread.демон = Истинный
- bot_thread.начать()
- лесоруб.информация("Поток Telegram-bota запретил заготовку".)
-    кроме Исключение как э:
- лесоруб.ошибка(f "Ошибка" при запоке бота: {e}")
+# Запуск Flask и Telegram-бота
+def main():
+    logger.info("Запуск приложения...")
+    # Запускаем Telegram-бот в отдельном потоке
+    try:
+        bot_thread = threading.Thread(target=lambda: asyncio.run(run_bot()))
+        bot_thread.daemon = True
+        bot_thread.start()
+        logger.info("Поток Telegram-бота запущен.")
+    except Exception as e:
+        logger.error(f"Ошибка при запуске потока бота: {e}")
 
-    #Запуском Фляга (для локалного tetéstirovaniya, гуникорн используетсья на Рендере)
- приложение.бегать(хост='0,0,0,0', порт=инт(ПОРТ))
+    # Запускаем Flask (для локального тестирования, gunicorn используется на Render)
+    app.run(host='0.0.0.0', port=int(PORT))
 
-если __name__ == "__main__":
-    основной()
+if __name__ == "__main__":
+    main()
