@@ -1,4 +1,4 @@
 python-telegram-bot==20.7
-PySocks==1.7.1
-python-dotenv==1.0.1
-matplotlib
+python-dotenv==1.0.0
+matplotlib==3.7.1
+cryptography==42.0.5
