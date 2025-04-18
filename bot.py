@@ -17,7 +17,6 @@ from datetime import datetime, timedelta
 import pandas as pd
 from flask import Flask, render_template_string, send_file
 import io
-from telegram.ext._application import Application
 
 # Настройка логирования
 logging.basicConfig(
@@ -211,6 +210,7 @@ def generate_warp_config(user_id):
 # Flask маршрут для главной страницы
 @app.route('/')
 def stats_page():
+    logger.info("Запрос к главной странице статистики")
     active_users, banned_users = get_stats()
     return render_template_string(
         """
@@ -267,6 +267,7 @@ def stats_page():
 # Flask маршрут для графика активности
 @app.route('/activity_plot')
 def activity_plot():
+    logger.info("Запрос к графику активности")
     plot_buffer = generate_activity_plot()
     if not plot_buffer:
         return "No activity data available for the last 24 hours.", 404
@@ -575,12 +576,13 @@ async def run_bot():
 
 # Запуск Flask и Telegram-бота
 def main():
+    logger.info("Запуск приложения...")
     # Запускаем Telegram-бот в отдельном потоке
     bot_thread = threading.Thread(target=lambda: asyncio.run(run_bot()))
     bot_thread.daemon = True
     bot_thread.start()
 
-    # Запускаем Flask
+    # Запускаем Flask (для локального тестирования, gunicorn используется на Render)
     app.run(host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
 
 if __name__ == "__main__":
