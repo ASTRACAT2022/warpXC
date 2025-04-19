@@ -43,8 +43,9 @@ if not BOT_TOKEN:
 app = Flask(__name__)
 application = None  # Глобальная переменная для Telegram Application
 
-# База данных в памяти
+# Глобальное соединение с базой данных в памяти
 DB_PATH = ":memory:"
+global_conn = None
 
 # Проверка связи с Telegram API
 async def check_telegram_api():
@@ -64,10 +65,10 @@ async def check_telegram_api():
 
 # Инициализация базы данных и добавление тестовых данных
 def init_db():
-    conn = None
+    global global_conn
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
+        global_conn = sqlite3.connect(DB_PATH)
+        c = global_conn.cursor()
         c.execute('''CREATE TABLE users (
             telegram_id INTEGER PRIMARY KEY,
             username TEXT,
@@ -84,7 +85,7 @@ def init_db():
             is_active INTEGER DEFAULT 1,
             FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
         )''')
-        conn.commit()
+        global_conn.commit()
         logger.info("База данных инициализирована в памяти")
 
         # Добавление тестовых данных
@@ -100,15 +101,11 @@ def init_db():
                 "VALUES (?, ?, ?, ?)",
                 (str(uuid.uuid4()), telegram_id, datetime.now() - timedelta(hours=i), 1)
             )
-        conn.commit()
+        global_conn.commit()
         logger.info("Тестовые данные добавлены")
     except sqlite3.Error as e:
         logger.error(f"Ошибка инициализации базы данных или добавления тестовых данных: {e}")
         raise
-    finally:
-        if conn:
-            conn.close()
-            logger.info("Соединение с базой данных закрыто")
 
 # Генерация WARP конфигурации
 def generate_warp_config():
@@ -123,7 +120,7 @@ Jmin = 23
 Jmax = 911
 H1 = 1
 H2 = 2
-H Nau3 = 3
+H3 = 3
 H4 = 4
 MTU = 1280
 Address = 172.16.0.2, 2606:4700:110:8a82:ae4c:ce7e:e5a6:a7fd
@@ -143,8 +140,7 @@ def is_admin(telegram_id):
 # Получение статистики
 def get_stats():
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
+        c = global_conn.cursor()
         c.execute("SELECT COUNT(*) FROM users WHERE is_banned = 0")
         active_users = c.fetchone()[0]
         c.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1")
@@ -153,17 +149,16 @@ def get_stats():
         active_configs = c.fetchone()[0]
         c.execute("SELECT COUNT(*) FROM configs")
         total_configs = c.fetchone()[0]
+        logger.info(f"Статистика: active_users={active_users}, banned_users={banned_users}, "
+                    f"active_configs={active_configs}, total_configs={total_configs}")
         return active_users, banned_users, active_configs, total_configs
     except sqlite3.Error as e:
         logger.error(f"Ошибка получения статистики: {e}")
         return 0, 0, 0, 0
-    finally:
-        conn.close()
 
 # Получение активности
 def get_activity_by_range(range_type):
     try:
-        conn = sqlite3.connect(DB_PATH)
         query = """
             SELECT strftime('%H', first_seen) as hour, COUNT(*) as activity_count
             FROM users
@@ -179,13 +174,12 @@ def get_activity_by_range(range_type):
             start_time = datetime.now() - timedelta(days=30)
         else:
             start_time = datetime.now() - timedelta(days=1)
-        df = pd.read_sql_query(query, conn, params=(start_time,))
+        df = pd.read_sql_query(query, global_conn, params=(start_time,))
+        logger.info(f"Активность ({range_type}): {len(df)} записей")
         return df
     except sqlite3.Error as e:
         logger.error(f"Ошибка получения активности: {e}")
         return pd.DataFrame()
-    finally:
-        conn.close()
 
 # Генерация ASCII-графика
 def generate_ascii_chart(range_type):
@@ -369,18 +363,16 @@ def get_main_keyboard(is_admin_user=False):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
+        c = global_conn.cursor()
         c.execute(
             "INSERT OR REPLACE INTO users (telegram_id, username, first_name, last_name, first_seen, is_banned) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (user.id, user.username, user.first_name, user.last_name, datetime.now(), 0)
         )
-        conn.commit()
+        global_conn.commit()
+        logger.info(f"Пользователь {user.id} добавлен/обновлён")
     except sqlite3.Error as e:
         logger.error(f"Ошибка записи пользователя: {e}")
-    finally:
-        conn.close()
 
     is_admin_user = is_admin(user.id)
     reply_markup = get_main_keyboard(is_admin_user)
@@ -431,14 +423,12 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Обработчик /getconfig
 async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    c = global_conn.cursor()
 
     c.execute("SELECT is_banned, last_config_time FROM users WHERE telegram_id = ?", (user.id,))
     result = c.fetchone()
     if result and result[0] == 1:
         await update.message.reply_text("Вы забанены", reply_markup=get_main_keyboard())
-        conn.close()
         return
 
     if result and result[1]:
@@ -448,7 +438,6 @@ async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "Конфиг можно запрашивать раз в 24 часа",
                 reply_markup=get_main_keyboard()
             )
-            conn.close()
             return
 
     config = generate_warp_config()
@@ -461,8 +450,8 @@ async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "UPDATE users SET last_config_time = ? WHERE telegram_id = ?",
         (datetime.now().isoformat(), user.id)
     )
-    conn.commit()
-    conn.close()
+    global_conn.commit()
+    logger.info(f"Конфигурация создана для пользователя {user.id}")
 
     config_path = f"/tmp/config_{user.id}.conf"
     with open(config_path, "w") as f:
@@ -499,11 +488,9 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Только для админа")
         return
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    c = global_conn.cursor()
     c.execute("SELECT telegram_id, username, first_name, is_banned FROM users")
     users = c.fetchall()
-    conn.close()
     users_message = "👥 Пользователи:\n\n"
     for user in users:
         status = "🚫 Забанен" if user[3] else "✅ Активен"
@@ -520,11 +507,9 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         target_id = int(context.args[0])
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
+        c = global_conn.cursor()
         c.execute("UPDATE users SET is_banned = 1 WHERE telegram_id = ?", (target_id,))
-        conn.commit()
-        conn.close()
+        global_conn.commit()
         await update.message.reply_text(f"Пользователь {target_id} забанен", reply_markup=get_main_keyboard(is_admin=True))
         try:
             await context.bot.send_message(chat_id=target_id, text="Вы забанены")
@@ -543,11 +528,9 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     try:
         target_id = int(context.args[0])
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
+        c = global_conn.cursor()
         c.execute("UPDATE users SET is_banned = 0 WHERE telegram_id = ?", (target_id,))
-        conn.commit()
-        conn.close()
+        global_conn.commit()
         await update.message.reply_text(f"Пользователь {target_id} разбанен", reply_markup=get_main_keyboard(is_admin=True))
         try:
             await context.bot.send_message(chat_id=target_id, text="Вы разбанены")
@@ -565,11 +548,9 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Укажите сообщение: /broadcast <текст>")
         return
     message = " ".join(context.args)
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
+    c = global_conn.cursor()
     c.execute("SELECT telegram_id FROM users WHERE is_banned = 0")
     users = c.fetchall()
-    conn.close()
     success_count = 0
     for user in users:
         try:
