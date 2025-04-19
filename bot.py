@@ -55,6 +55,9 @@ except ValueError:
 app = Flask(__name__)
 application = None  # Глобальная переменная для Telegram Application
 
+# Путь к базе данных
+DB_PATH = "/opt/render/warp_bot_db/warp_bot.db"
+
 # Проверка связи с Telegram API
 async def check_telegram_api():
     try:
@@ -74,7 +77,7 @@ async def check_telegram_api():
 # Инициализация базы данных
 def init_db():
     try:
-        conn = sqlite3.connect("warp_bot.db")
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute('''CREATE TABLE IF NOT EXISTS users (
             telegram_id INTEGER PRIMARY KEY,
@@ -133,7 +136,7 @@ def is_admin(telegram_id):
 # Получение статистики
 def get_stats():
     try:
-        conn = sqlite3.connect("warp_bot.db")
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("SELECT COUNT(*) FROM users WHERE is_banned = 0")
         active_users = c.fetchone()[0]
@@ -153,7 +156,7 @@ def get_stats():
 # Получение активности по диапазонам времени
 def get_activity_by_range(range_type):
     try:
-        conn = sqlite3.connect("warp_bot.db")
+        conn = sqlite3.connect(DB_PATH)
         query = """
             SELECT strftime('%H', first_seen) as hour, COUNT(*) as activity_count
             FROM users
@@ -371,7 +374,7 @@ def get_main_keyboard(is_admin_user=False):
 # Обработчик команды /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    conn = sqlite3.connect("warp_bot.db")
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
     # Регистрация пользователя
@@ -434,7 +437,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Обработчик команды /getconfig
 async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    conn = sqlite3.connect("warp_bot.db")
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
     # Проверка на бан
@@ -510,7 +513,7 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
     
-    conn = sqlite3.connect("warp_bot.db")
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT telegram_id, username, first_name, last_name, is_banned FROM users")
     users = c.fetchall()
@@ -540,7 +543,7 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         target_id = int(context.args[0])
-        conn = sqlite3.connect("warp_bot.db")
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("UPDATE users SET is_banned = 1 WHERE telegram_id = ?", (target_id,))
         conn.commit()
@@ -568,7 +571,7 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     try:
         target_id = int(context.args[0])
-        conn = sqlite3.connect("warp_bot.db")
+        conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
         c.execute("UPDATE users SET is_banned = 0 WHERE telegram_id = ?", (target_id,))
         conn.commit()
@@ -595,7 +598,7 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     message = " ".join(context.args)
-    conn = sqlite3.connect("warp_bot.db")
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT telegram_id FROM users WHERE is_banned = 0")
     users = c.fetchall()
