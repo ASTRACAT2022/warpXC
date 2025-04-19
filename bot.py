@@ -5,7 +5,6 @@ import asyncio
 import threading
 import uuid
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -25,36 +24,27 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Загрузка .env
-load_dotenv()
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")
+# Конфигурационные переменные
+BOT_TOKEN = "7935425343:AAECbjFJvLHkeTvwHAKDG8uvmy-KiWcPtns"
+ADMIN_TELEGRAM_ID = 650154766
 PORT = os.getenv("PORT", "5000")
-RENDER_EXTERNAL_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "warpxc.onrender.com")
+RENDER_EXTERNAL_HOSTNAME = "warpxc.onrender.com"
 
 logger.info(f"Загруженные переменные: BOT_TOKEN={'***' if BOT_TOKEN else 'не задан'}, "
-            f"ADMIN_TELEGRAM_ID={ADMIN_TELEGRAM_ID or 'не задан'}, "
+            f"ADMIN_TELEGRAM_ID={ADMIN_TELEGRAM_ID}, "
             f"PORT={PORT}, RENDER_EXTERNAL_HOSTNAME={RENDER_EXTERNAL_HOSTNAME}")
 
 # Проверка переменных
 if not BOT_TOKEN:
-    logger.error("BOT_TOKEN не задан в .env")
+    logger.error("BOT_TOKEN не задан")
     raise ValueError("BOT_TOKEN не задан")
-if not ADMIN_TELEGRAM_ID:
-    logger.error("ADMIN_TELEGRAM_ID не задан в .env")
-    raise ValueError("ADMIN_TELEGRAM_ID не задан")
-try:
-    ADMIN_TELEGRAM_ID = int(ADMIN_TELEGRAM_ID)
-except ValueError:
-    logger.error("ADMIN_TELEGRAM_ID должен быть числом")
-    raise ValueError("ADMIN_TELEGRAM_ID должен быть числом")
 
 # Инициализация Flask
 app = Flask(__name__)
 application = None  # Глобальная переменная для Telegram Application
 
-# Путь к базе данных
-DB_PATH = "/opt/render/warp_bot_db/warp_bot.db"
+# База данных в памяти
+DB_PATH = ":memory:"
 
 # Проверка связи с Telegram API
 async def check_telegram_api():
@@ -77,7 +67,7 @@ def init_db():
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute('''CREATE TABLE IF NOT EXISTS users (
+        c.execute('''CREATE TABLE users (
             telegram_id INTEGER PRIMARY KEY,
             username TEXT,
             first_name TEXT,
@@ -86,7 +76,7 @@ def init_db():
             last_config_time TEXT,
             is_banned INTEGER DEFAULT 0
         )''')
-        c.execute('''CREATE TABLE IF NOT EXISTS configs (
+        c.execute('''CREATE TABLE configs (
             config_id TEXT PRIMARY KEY,
             telegram_id INTEGER,
             created_at DATETIME,
@@ -94,12 +84,14 @@ def init_db():
             FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
         )''')
         conn.commit()
-        logger.info("База данных инициализирована")
+        logger.info("База данных инициализирована в памяти")
     except sqlite3.Error as e:
         logger.error(f"Ошибка инициализации базы данных: {e}")
         raise
     finally:
-        conn.close()
+        if 'conn' in locals():
+            conn.close()
+            logger.info("Соединение с базой данных закрыто")
 
 # Генерация WARP конфигурации
 def generate_warp_config():
@@ -226,8 +218,8 @@ async def stats_page():
                 <h2 class="text-3xl font-semibold mb-6">Статистика</h2>
                 <div class="bg-gray-800 p-4 rounded-lg mb-6">
                     <p class="text-lg font-medium">
-                        Связь с Telegram API: 
-                        <span class="{% if api_status_ok %}text-green-400{% else %}text-red-400{% endif %}">
+                        Статус Telegram API: 
+                        <span class="{% if api_status_ok %}text-green-400{% else %}text-red-400{% endif %} font-bold">
                             {{ api_status_message }}
                         </span>
                     </p>
@@ -252,7 +244,7 @@ async def stats_page():
                 </div>
                 <h2 class="text-3xl font-semibold mb-6">Активность пользователей</h2>
                 <div class="bg-gray-800 p-6 rounded-lg shadow">
-                    <h3 class="text-xl font-medium mb-4">Гра   График активности (24 часа)</h3>
+                    <h3 class="text-xl font-medium mb-4">График активности (24 часа)</h3>
                     <pre class="font-mono text-sm bg-gray-900 p-4 rounded">{{ ascii_chart_day }}</pre>
                     <div class="mt-4 flex space-x-4">
                         <a href="/activity/day" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">24 часа</a>
@@ -307,8 +299,8 @@ async def activity_plot(range_type):
                 <h2 class="text-3xl font-semibold mb-6">Активность пользователей ({{ range_type }})</h2>
                 <div class="bg-gray-800 p-4 rounded-lg mb-6">
                     <p class="text-lg font-medium">
-                        Связь с Telegram API: 
-                        <span class="{% if api_status_ok %}text-green-400{% else %}text-red-400{% endif %}">
+                        Статус Telegram API: 
+                        <span class="{% if api_status_ok %}text-green-400{% else %}text-red-400{% endif %} font-bold">
                             {{ api_status_message }}
                         </span>
                     </p>
