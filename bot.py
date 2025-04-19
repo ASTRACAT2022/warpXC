@@ -202,7 +202,7 @@ def get_main_keyboard(user_id):
 
 # Flask routes
 @app.route('/')
-def index():
+async def index():
     if 'logged_in' not in session:
         return redirect(url_for('login'))
     
@@ -212,7 +212,15 @@ def index():
         f"👥 Пользователи: {active_users} активных, {banned_users} забаненных\n"
         f"📂 Конфигурации: {active_configs} активных, {total_configs} всего"
     )
-    return render_template('index.html', stats_text=stats_text)
+    
+    # Проверка связи с Telegram API
+    try:
+        await application.bot.get_me()
+        api_status = {"connected": True, "message": "🟢 Подключено"}
+    except Exception as e:
+        api_status = {"connected": False, "message": f"🔴 Отключено: {str(e)}"}
+    
+    return render_template('index.html', stats_text=stats_text, api_status=api_status)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -225,7 +233,7 @@ def login():
             flash('Успешный вход!', 'success')
             return redirect(url_for('index'))
         else:
-            flash('Неверное имя пользователя или пароль.', 'danger')
+            flash('Неверное имя пользователя или пароль.', 'error')
     
     return render_template('login.html')
 
@@ -269,7 +277,7 @@ async def broadcast():
     if request.method == 'POST':
         message = request.form.get('message')
         if not message:
-            flash('Сообщение не может быть пустым.', 'danger')
+            flash('Сообщение не может быть пустым.', 'error')
             return redirect(url_for('broadcast'))
         
         users = db.get_active_users()
@@ -289,7 +297,7 @@ async def broadcast():
                 success += 1
             except Exception as e:
                 failed += 1
-                logger警告(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+                logger.warning(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
             
             # Небольшая задержка, чтобы не превысить лимиты Telegram
             await asyncio.sleep(0.1)
@@ -303,58 +311,73 @@ async def broadcast():
 TEMPLATES = {
     'index.html': '''
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>WARP Bot Dashboard</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-        <style>
-            pre {
-                background-color: #f8f9fa;
-                padding: 15px;
-                border-radius: 5px;
-                white-space: pre-wrap;
-                font-family: monospace;
-            }
-        </style>
+        <script src="https://cdn.tailwindcss.com"></script>
     </head>
-    <body>
-        <div class="container mt-5">
-            <h1>WARP Bot Dashboard</h1>
-            <a href="{{ url_for('logout') }}" class="btn btn-secondary mb-3">Выйти</a>
-            <a href="{{ url_for('users') }}" class="btn btn-primary mb-3">Пользователи</a>
-            <a href="{{ url_for('broadcast') }}" class="btn btn-info mb-3">Рассылка</a>
-            {% for message in get_flashed_messages(with_categories=true) %}
-                <div class="alert alert-{{ message[0] }}">{{ message[1] }}</div>
-            {% endfor %}
-            <h3>Статистика</h3>
-            <pre>{{ stats_text }}</pre>
+    <body class="bg-gray-100 font-sans">
+        <div class="flex h-screen">
+            <!-- Sidebar -->
+            <div class="w-64 bg-gray-800 text-white p-6">
+                <h2 class="text-2xl font-bold mb-8">WARP Bot</h2>
+                <nav>
+                    <a href="{{ url_for('index') }}" class="block py-2 px-4 rounded bg-blue-600 mb-2">Главная</a>
+                    <a href="{{ url_for('users') }}" class="block py-2 px-4 rounded hover:bg-gray-700 mb-2">Пользователи</a>
+                    <a href="{{ url_for('broadcast') }}" class="block py-2 px-4 rounded hover:bg-gray-700 mb-2">Рассылка</a>
+                    <a href="{{ url_for('logout') }}" class="block py-2 px-4 rounded hover:bg-gray-700">Выйти</a>
+                </nav>
+            </div>
+            <!-- Main Content -->
+            <div class="flex-1 p-8">
+                <h1 class="text-3xl font-bold mb-6">Главная</h1>
+                {% for message in get_flashed_messages(with_categories=true) %}
+                    <div class="bg-{% if message[0] == 'success' %}green{% elif message[0] == 'error' %}red{% else %}yellow{% endif %}-100 border-{% if message[0] == 'success' %}green{% elif message[0] == 'error' %}red{% else %}yellow{% endif %}-400 text-{% if message[0] == 'success' %}green{% elif message[0] == 'error' %}red{% else %}yellow{% endif %}-700 px-4 py-3 rounded relative mb-4" role="alert">
+                        {{ message[1] }}
+                    </div>
+                {% endfor %}
+                <div class="bg-white p-6 rounded-lg shadow-md mb-6">
+                    <h2 class="text-xl font-semibold mb-4">Статус Telegram API</h2>
+                    <p class="{% if api_status.connected %}text-green-600{% else %}text-red-600{% endif %} font-medium">{{ api_status.message }}</p>
+                </div>
+                <div class="bg-white p-6 rounded-lg shadow-md">
+                    <h2 class="text-xl font-semibold mb-4">Статистика</h2>
+                    <pre class="bg-gray-100 p-4 rounded-lg">{{ stats_text }}</pre>
+                </div>
+            </div>
         </div>
     </body>
     </html>
     ''',
     'login.html': '''
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Login - WARP Bot</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <script src="https://cdn.tailwindcss.com"></script>
     </head>
-    <body>
-        <div class="container mt-5">
-            <h1>Вход в WARP Bot Dashboard</h1>
+    <body class="bg-gray-100 flex items-center justify-center h-screen">
+        <div class="bg-white p-8 rounded-lg shadow-md w-full max-w-md">
+            <h1 class="text-2xl font-bold mb-6 text-center">Вход в WARP Bot</h1>
             {% for message in get_flashed_messages(with_categories=true) %}
-                <div class="alert alert-{{ message[0] }}">{{ message[1] }}</div>
+                <div class="bg-{% if message[0] == 'success' %}green{% elif message[0] == 'error' %}red{% else %}yellow{% endif %}-100 border-{% if message[0] == 'success' %}green{% elif message[0] == 'error' %}red{% else %}yellow{% endif %}-400 text-{% if message[0] == 'success' %}green{% elif message[0] == 'error' %}red{% else %}yellow{% endif %}-700 px-4 py-3 rounded relative mb-4" role="alert">
+                    {{ message[1] }}
+                </div>
             {% endfor %}
             <form method="POST">
-                <div class="mb-3">
-                    <label for="username" class="form-label">Имя пользователя</label>
-                    <input type="text" class="form-control" id="username" name="username" required>
+                <div class="mb-4">
+                    <label for="username" class="block text-sm font-medium text-gray-700">Имя пользователя</label>
+                    <input type="text" id="username" name="username" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500" required>
                 </div>
-                <div class="mb-3">
-                    <label for="password" class="form-label">Пароль</label>
-                    <input type="password" class="form-control" id="password" name="password" required>
+                <div class="mb-6">
+                    <label for="password" class="block text-sm font-medium text-gray-700">Пароль</label>
+                    <input type="password" id="password" name="password" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500" required>
                 </div>
-                <button type="submit" class="btn btn-primary">Войти</button>
+                <button type="submit" class="w-full bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 transition duration-200">Войти</button>
             </form>
         </div>
     </body>
@@ -362,73 +385,107 @@ TEMPLATES = {
     ''',
     'users.html': '''
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Users - WARP Bot</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <script src="https://cdn.tailwindcss.com"></script>
     </head>
-    <body>
-        <div class="container mt-5">
-            <h1>Пользователи</h1>
-            <a href="{{ url_for('index') }}" class="btn btn-secondary mb-3">Назад</a>
-            <a href="{{ url_for('logout') }}" class="btn btn-secondary mb-3">Выйти</a>
-            {% for message in get_flashed_messages(with_categories=true) %}
-                <div class="alert alert-{{ message[0] }}">{{ message[1] }}</div>
-            {% endfor %}
-            <table class="table table-striped">
-                <thead>
-                    <tr>
-                        <th>ID</th>
-                        <th>Username</th>
-                        <th>Имя</th>
-                        <th>Статус</th>
-                        <th>Действия</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for user in users %}
-                    <tr>
-                        <td>{{ user[0] }}</td>
-                        <td>{{ user[1] or 'N/A' }}</td>
-                        <td>{{ user[2] or 'N/A' }}</td>
-                        <td>{{ 'Забанен' if user[3] else 'Активен' }}</td>
-                        <td>
-                            {% if user[3] %}
-                            <a href="{{ url_for('unban_user', user_id=user[0]) }}" class="btn btn-success btn-sm">Разбанить</a>
-                            {% else %}
-                            <a href="{{ url_for('ban_user', user_id=user[0]) }}" class="btn btn-danger btn-sm">Забанить</a>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+    <body class="bg-gray-100 font-sans">
+        <div class="flex h-screen">
+            <!-- Sidebar -->
+            <div class="w-64 bg-gray-800 text-white p-6">
+                <h2 class="text-2xl font-bold mb-8">WARP Bot</h2>
+                <nav>
+                    <a href="{{ url_for('index') }}" class="block py-2 px-4 rounded hover:bg-gray-700 mb-2">Главная</a>
+                    <a href="{{ url_for('users') }}" class="block py-2 px-4 rounded bg-blue-600 mb-2">Пользователи</a>
+                    <a href="{{ url_for('broadcast') }}" class="block py-2 px-4 rounded hover:bg-gray-700 mb-2">Рассылка</a>
+                    <a href="{{ url_for('logout') }}" class="block py-2 px-4 rounded hover:bg-gray-700">Выйти</a>
+                </nav>
+            </div>
+            <!-- Main Content -->
+            <div class="flex-1 p-8">
+                <h1 class="text-3xl font-bold mb-6">Пользователи</h1>
+                {% for message in get_flashed_messages(with_categories=true) %}
+                    <div class="bg-{% if message[0] == 'success' %}green{% elif message[0] == 'error' %}red{% else %}yellow{% endif %}-100 border-{% if message[0] == 'success' %}green{% elif message[0] == 'error' %}red{% else %}yellow{% endif %}-400 text-{% if message[0] == 'success' %}green{% elif message[0] == 'error' %}red{% else %}yellow{% endif %}-700 px-4 py-3 rounded relative mb-4" role="alert">
+                        {{ message[1] }}
+                    </div>
+                {% endfor %}
+                <div class="bg-white p-6 rounded-lg shadow-md">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-gray-50">
+                            <tr>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Username</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Имя</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Статус</th>
+                                <th class="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Действия</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200">
+                            {% for user in users %}
+                            <tr>
+                                <td class="px-6 py-4 whitespace-nowrap">{{ user[0] }}</td>
+                                <td class="px-6 py-4 whitespace-nowrap">{{ user[1] or 'N/A' }}</td>
+                                <td class="px-6 py-4 whitespace-nowrap">{{ user[2] or 'N/A' }}</td>
+                                <td class="px-6 py-4 whitespace-nowrap">{{ 'Забанен' if user[3] else 'Активен' }}</td>
+                                <td class="px-6 py-4 whitespace-nowrap">
+                                    {% if user[3] %}
+                                    <a href="{{ url_for('unban_user', user_id=user[0]) }}" class="text-green-600 hover:text-green-800">Разбанить</a>
+                                    {% else %}
+                                    <a href="{{ url_for('ban_user', user_id=user[0]) }}" class="text-red-600 hover:text-red-800">Забанить</a>
+                                    {% endif %}
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
     </body>
     </html>
     ''',
     'broadcast.html': '''
     <!DOCTYPE html>
-    <html>
+    <html lang="en">
     <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
         <title>Broadcast - WARP Bot</title>
-        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <script src="https://cdn.tailwindcss.com"></script>
     </head>
-    <body>
-        <div class="container mt-5">
-            <h1>Рассылка пользователям</h1>
-            <a href="{{ url_for('index') }}" class="btn btn-secondary mb-3">Назад</a>
-            <a href="{{ url_for('logout') }}" class="btn btn-secondary mb-3">Выйти</a>
-            {% for message in get_flashed_messages(with_categories=true) %}
-                <div class="alert alert-{{ message[0] }}">{{ message[1] }}</div>
-            {% endfor %}
-            <form method="POST">
-                <div class="mb-3">
-                    <label for="message" class="form-label">Сообщение для рассылки</label>
-                    <textarea class="form-control" id="message" name="message" rows="5" required></textarea>
+    <body class="bg-gray-100 font-sans">
+        <div class="flex h-screen">
+            <!-- Sidebar -->
+            <div class="w-64 bg-gray-800 text-white p-6">
+                <h2 class="text-2xl font-bold mb-8">WARP Bot</h2>
+                <nav>
+                    <a href="{{ url_for('index') }}" class="block py-2 px-4 rounded hover:bg-gray-700 mb-2">Главная</a>
+                    <a href="{{ url_for('users') }}" class="block py-2 px-4 rounded hover:bg-gray-700 mb-2">Пользователи</a>
+                    <a href="{{ url_for('broadcast') }}" class="block py-2 px-4 rounded bg-blue-600 mb-2">Рассылка</a>
+                    <a href="{{ url_for('logout') }}" class="block py-2 px-4 rounded hover:bg-gray-700">Выйти</a>
+                </nav>
+            </div>
+            <!-- Main Content -->
+            <div class="flex-1 p-8">
+                <h1 class="text-3xl font-bold mb-6">Рассылка пользователям</h1>
+                {% for message in get_flashed_messages(with_categories=true) %}
+                    <div class="bg-{% if message[0] == 'success' %}green{% elif message[0] == 'error' %}red{% else %}yellow{% endif %}-100 border-{% if message[0] == 'success' %}green{% elif message[0] == 'error' %}red{% else %}yellow{% endif %}-400 text-{% if message[0] == 'success' %}green{% elif message[0] == 'error' %}red{% else %}yellow{% endif %}-700 px-4 py-3 rounded relative mb-4" role="alert">
+                        {{ message[1] }}
+                    </div>
+                {% endfor %}
+                <div class="bg-white p-6 rounded-lg shadow-md">
+                    <form method="POST">
+                        <div class="mb-4">
+                            <label for="message" class="block text-sm font-medium text-gray-700">Сообщение для рассылки</label>
+                            <textarea id="message" name="message" rows="5" class="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-blue-500 focus:border-blue-500" required></textarea>
+                        </div>
+                        <button type="submit" class="bg-blue-600 text-white py-2 px-4 rounded-md hover:bg-blue-700 transition duration-200">Отправить рассылку</button>
+                    </form>
                 </div>
-                <button type="submit" class="btn btn-primary">Отправить рассылку</button>
-            </form>
+            </div>
         </div>
     </body>
     </html>
