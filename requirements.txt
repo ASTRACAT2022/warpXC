@@ -6,3 +6,4 @@ pandas==2.2.2
 Flask==3.0.3
 gunicorn==22.0.0
 asciichartpy==1.5.25
+aiohttp==3.9.5
