@@ -25,27 +25,29 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Загрузка переменных окружения
+# Загрузка .env
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")
 PORT = os.getenv("PORT", "5000")
+RENDER_EXTERNAL_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "warpxc.onrender.com")
 
 logger.info(f"Загруженные переменные: BOT_TOKEN={'***' if BOT_TOKEN else 'не задан'}, "
-            f"ADMIN_TELEGRAM_ID={ADMIN_TELEGRAM_ID or 'не задан'}, PORT={PORT}")
+            f"ADMIN_TELEGRAM_ID={ADMIN_TELEGRAM_ID or 'не задан'}, "
+            f"PORT={PORT}, RENDER_EXTERNAL_HOSTNAME={RENDER_EXTERNAL_HOSTNAME}")
 
+# Проверка переменных
 if not BOT_TOKEN:
-    logger.error("Переменная окружения BOT_TOKEN не задана.")
-    raise ValueError("BOT_TOKEN не задан.")
+    logger.error("BOT_TOKEN не задан в .env")
+    raise ValueError("BOT_TOKEN не задан")
 if not ADMIN_TELEGRAM_ID:
-    logger.error("Переменная окружения ADMIN_TELEGRAM_ID не задана.")
-    raise ValueError("ADMIN_TELEGRAM_ID не задан.")
-
+    logger.error("ADMIN_TELEGRAM_ID не задан в .env")
+    raise ValueError("ADMIN_TELEGRAM_ID не задан")
 try:
     ADMIN_TELEGRAM_ID = int(ADMIN_TELEGRAM_ID)
 except ValueError:
-    logger.error("ADMIN_TELEGRAM_ID должен быть числом.")
-    raise ValueError("ADMIN_TELEGRAM_ID должен быть числом.")
+    logger.error("ADMIN_TELEGRAM_ID должен быть числом")
+    raise ValueError("ADMIN_TELEGRAM_ID должен быть числом")
 
 # Инициализация Flask
 app = Flask(__name__)
@@ -61,7 +63,7 @@ async def check_telegram_api():
             async with session.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe") as response:
                 data = await response.json()
                 if data.get("ok"):
-                    logger.info("Связь с Telegram API активна.")
+                    logger.info("Связь с Telegram API активна")
                     return True, "🟢 Активна"
                 else:
                     logger.warning(f"Ошибка Telegram API: {data}")
@@ -92,7 +94,7 @@ def init_db():
             FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
         )''')
         conn.commit()
-        logger.info("База данных инициализирована.")
+        logger.info("База данных инициализирована")
     except sqlite3.Error as e:
         logger.error(f"Ошибка инициализации базы данных: {e}")
         raise
@@ -125,7 +127,7 @@ Endpoint = 162.159.192.227:894
 """
     return config
 
-# Проверка, является ли пользователь админом
+# Проверка админ-прав
 def is_admin(telegram_id):
     return telegram_id == ADMIN_TELEGRAM_ID
 
@@ -149,7 +151,7 @@ def get_stats():
     finally:
         conn.close()
 
-# Получение активности по диапазонам времени
+# Получение активности
 def get_activity_by_range(range_type):
     try:
         conn = sqlite3.connect(DB_PATH)
@@ -180,8 +182,8 @@ def get_activity_by_range(range_type):
 def generate_ascii_chart(range_type):
     df = get_activity_by_range(range_type)
     if df.empty:
-        logger.warning(f"Нет данных для графика ({range_type}).")
-        return "Нет данных для графика."
+        logger.warning(f"Нет данных для графика ({range_type})")
+        return "Нет данных для графика"
 
     activity_counts = [0] * 24
     for _, row in df.iterrows():
@@ -191,7 +193,7 @@ def generate_ascii_chart(range_type):
     chart = plot(activity_counts, {'height': 10, 'format': '{:8.0f}'})
     return f"Активность ({range_type}):\n{chart}"
 
-# Flask маршрут для главной страницы
+# Flask: Главная страница
 @app.route('/')
 async def stats_page():
     logger.info("Запрос к главной странице")
@@ -250,7 +252,7 @@ async def stats_page():
                 </div>
                 <h2 class="text-3xl font-semibold mb-6">Активность пользователей</h2>
                 <div class="bg-gray-800 p-6 rounded-lg shadow">
-                    <h3 class="text-xl font-medium mb-4">График активности (24 часа)</h3>
+                    <h3 class="text-xl font-medium mb-4">Гра   График активности (24 часа)</h3>
                     <pre class="font-mono text-sm bg-gray-900 p-4 rounded">{{ ascii_chart_day }}</pre>
                     <div class="mt-4 flex space-x-4">
                         <a href="/activity/day" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">24 часа</a>
@@ -271,12 +273,12 @@ async def stats_page():
         api_status_message=api_status_message
     )
 
-# Flask маршрут для графика активности
+# Flask: График активности
 @app.route('/activity/<range_type>')
 async def activity_plot(range_type):
     logger.info(f"Запрос к графику активности ({range_type})")
     if range_type not in ["day", "week", "month"]:
-        return "Недопустимый диапазон.", 400
+        return "Недопустимый диапазон", 400
     ascii_chart = generate_ascii_chart(range_type)
     api_status_ok, api_status_message = await check_telegram_api()
     return render_template_string(
@@ -329,7 +331,7 @@ async def activity_plot(range_type):
         api_status_message=api_status_message
     )
 
-# Создание клавиатуры
+# Клавиатура бота
 def get_main_keyboard(is_admin_user=False):
     keyboard = [
         [
@@ -376,7 +378,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         f"Добро пожаловать, {user.first_name or 'пользователь'}! 👋\n"
         f"ID: {user.id}\n"
-        "Я бот для WARP конфигураций. Выберите действие:",
+        "Бот для WARP конфигураций. Выберите действие:",
         reply_markup=reply_markup
     )
 
@@ -392,7 +394,7 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await get_config(update, context)
     elif query.data == "help":
         help_text = (
-            "Я бот для WARP конфигураций. Команды:\n"
+            "Бот для WARP конфигураций. Команды:\n"
             "/start - Начать\n"
             "/getconfig - Получить WARP конфиг\n"
             "Админ-команды:\n"
@@ -426,7 +428,7 @@ async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     c.execute("SELECT is_banned, last_config_time FROM users WHERE telegram_id = ?", (user.id,))
     result = c.fetchone()
     if result and result[0] == 1:
-        await update.message.reply_text("Вы забанены.", reply_markup=get_main_keyboard())
+        await update.message.reply_text("Вы забанены", reply_markup=get_main_keyboard())
         conn.close()
         return
 
@@ -434,7 +436,7 @@ async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
         last_time = datetime.fromisoformat(result[1])
         if datetime.now() - last_time < timedelta(hours=24):
             await update.message.reply_text(
-                "Конфиг можно запрашивать раз в 24 часа.",
+                "Конфиг можно запрашивать раз в 24 часа",
                 reply_markup=get_main_keyboard()
             )
             conn.close()
@@ -471,7 +473,7 @@ async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Обработчик /stats
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Только для админа.")
+        await update.message.reply_text("Только для админа")
         return
     active_users, banned_users, active_configs, total_configs = get_stats()
     stats_message = (
@@ -486,7 +488,7 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Обработчик /users
 async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Только для админа.")
+        await update.message.reply_text("Только для админа")
         return
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -502,7 +504,7 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Обработчик /ban
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Только для админа.")
+        await update.message.reply_text("Только для админа")
         return
     if not context.args:
         await update.message.reply_text("Укажите ID: /ban <telegram_id>")
@@ -514,18 +516,18 @@ async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c.execute("UPDATE users SET is_banned = 1 WHERE telegram_id = ?", (target_id,))
         conn.commit()
         conn.close()
-        await update.message.reply_text(f"Пользователь {target_id} забанен.", reply_markup=get_main_keyboard(is_admin=True))
+        await update.message.reply_text(f"Пользователь {target_id} забанен", reply_markup=get_main_keyboard(is_admin=True))
         try:
-            await context.bot.send_message(chat_id=target_id, text="Вы забанены.")
+            await context.bot.send_message(chat_id=target_id, text="Вы забанены")
         except Exception as e:
             logger.warning(f"Не удалось уведомить ID {target_id}: {e}")
     except ValueError:
-        await update.message.reply_text("Неверный ID.", reply_markup=get_main_keyboard(is_admin=True))
+        await update.message.reply_text("Неверный ID", reply_markup=get_main_keyboard(is_admin=True))
 
 # Обработчик /unban
 async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Только для админа.")
+        await update.message.reply_text("Только для админа")
         return
     if not context.args:
         await update.message.reply_text("Укажите ID: /unban <telegram_id>")
@@ -537,18 +539,18 @@ async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
         c.execute("UPDATE users SET is_banned = 0 WHERE telegram_id = ?", (target_id,))
         conn.commit()
         conn.close()
-        await update.message.reply_text(f"Пользователь {target_id} разбанен.", reply_markup=get_main_keyboard(is_admin=True))
+        await update.message.reply_text(f"Пользователь {target_id} разбанен", reply_markup=get_main_keyboard(is_admin=True))
         try:
-            await context.bot.send_message(chat_id=target_id, text="Вы разбанены.")
+            await context.bot.send_message(chat_id=target_id, text="Вы разбанены")
         except Exception as e:
             logger.warning(f"Не удалось уведомить ID {target_id}: {e}")
     except ValueError:
-        await update.message.reply_text("Неверный ID.", reply_markup=get_main_keyboard(is_admin=True))
+        await update.message.reply_text("Неверный ID", reply_markup=get_main_keyboard(is_admin=True))
 
 # Обработчик /broadcast
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Только для админа.")
+        await update.message.reply_text("Только для админа")
         return
     if not context.args:
         await update.message.reply_text("Укажите сообщение: /broadcast <текст>")
@@ -567,14 +569,14 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.warning(f"Не удалось отправить сообщение ID {user[0]}: {e}")
     await update.message.reply_text(
-        f"Рассылка завершена. Отправлено {success_count} пользователям.",
+        f"Рассылка завершена. Отправлено {success_count} пользователям",
         reply_markup=get_main_keyboard(is_admin=True)
     )
 
 # Обработчик /hourly_activity
 async def hourly_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Только для админа.")
+        await update.message.reply_text("Только для админа")
         return
     ascii_chart = generate_ascii_chart("day")
     await update.message.reply_text(
@@ -587,10 +589,10 @@ async def hourly_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Ошибка: {context.error}")
 
-# Запуск бота в режиме polling
+# Запуск бота
 async def run_bot():
     global application
-    logger.info("Создание Application...")
+    logger.info("Создание Application")
     application = Application.builder().token(BOT_TOKEN).build()
 
     application.add_handler(CommandHandler("start", start))
@@ -603,25 +605,25 @@ async def run_bot():
     application.add_handler(CommandHandler("broadcast", broadcast))
     application.add_handler(CommandHandler("hourly_activity", hourly_activity))
     application.add_error_handler(error_handler)
-    logger.info("Обработчики зарегистрированы.")
+    logger.info("Обработчики зарегистрированы")
 
-    logger.info("Запуск polling...")
+    logger.info("Запуск polling")
     try:
         await application.bot.delete_webhook(drop_pending_updates=True)
         await application.initialize()
         await application.start()
         await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-        logger.info("Polling запущен.")
+        logger.info("Polling запущен")
     except Exception as e:
         logger.error(f"Ошибка polling: {e}")
         raise
 
 # Главная функция
 def main():
-    logger.info("Запуск приложения...")
+    logger.info("Запуск приложения")
     init_db()
 
-    # Добавление тестовых данных
+    # Тестовые данные
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -638,7 +640,7 @@ def main():
                 (str(uuid.uuid4()), telegram_id, datetime.now() - timedelta(hours=i), 1)
             )
         conn.commit()
-        logger.info("Тестовые данные добавлены.")
+        logger.info("Тестовые данные добавлены")
     except sqlite3.Error as e:
         logger.error(f"Ошибка добавления тестовых данных: {e}")
     finally:
@@ -648,7 +650,7 @@ def main():
         bot_thread = threading.Thread(target=lambda: asyncio.run(run_bot()))
         bot_thread.daemon = True
         bot_thread.start()
-        logger.info("Бот запущен в режиме polling.")
+        logger.info("Бот запущен в режиме polling")
     except Exception as e:
         logger.error(f"Ошибка запуска бота: {e}")
         raise
