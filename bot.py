@@ -62,8 +62,9 @@ async def check_telegram_api():
         logger.error(f"Ошибка проверки Telegram API: {e}")
         return False, f"🔴 Отсутствует ({str(e)})"
 
-# Инициализация базы данных
+# Инициализация базы данных и добавление тестовых данных
 def init_db():
+    conn = None
     try:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
@@ -85,11 +86,27 @@ def init_db():
         )''')
         conn.commit()
         logger.info("База данных инициализирована в памяти")
+
+        # Добавление тестовых данных
+        for i in range(10):
+            telegram_id = 12345 + i
+            c.execute(
+                "INSERT OR IGNORE INTO users (telegram_id, username, first_name, first_seen, is_banned) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (telegram_id, f"test_user_{i}", f"User{i}", datetime.now() - timedelta(hours=i), 0)
+            )
+            c.execute(
+                "INSERT INTO configs (config_id, telegram_id, created_at, is_active) "
+                "VALUES (?, ?, ?, ?)",
+                (str(uuid.uuid4()), telegram_id, datetime.now() - timedelta(hours=i), 1)
+            )
+        conn.commit()
+        logger.info("Тестовые данные добавлены")
     except sqlite3.Error as e:
-        logger.error(f"Ошибка инициализации базы данных: {e}")
+        logger.error(f"Ошибка инициализации базы данных или добавления тестовых данных: {e}")
         raise
     finally:
-        if 'conn' in locals():
+        if conn:
             conn.close()
             logger.info("Соединение с базой данных закрыто")
 
@@ -106,7 +123,7 @@ Jmin = 23
 Jmax = 911
 H1 = 1
 H2 = 2
-H3 = 3
+H Nau3 = 3
 H4 = 4
 MTU = 1280
 Address = 172.16.0.2, 2606:4700:110:8a82:ae4c:ce7e:e5a6:a7fd
@@ -614,29 +631,6 @@ async def run_bot():
 def main():
     logger.info("Запуск приложения")
     init_db()
-
-    # Тестовые данные
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        c = conn.cursor()
-        for i in range(10):
-            telegram_id = 12345 + i
-            c.execute(
-                "INSERT OR IGNORE INTO users (telegram_id, username, first_name, first_seen, is_banned) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (telegram_id, f"test_user_{i}", f"User{i}", datetime.now() - timedelta(hours=i), 0)
-            )
-            c.execute(
-                "INSERT INTO configs (config_id, telegram_id, created_at, is_active) "
-                "VALUES (?, ?, ?, ?)",
-                (str(uuid.uuid4()), telegram_id, datetime.now() - timedelta(hours=i), 1)
-            )
-        conn.commit()
-        logger.info("Тестовые данные добавлены")
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка добавления тестовых данных: {e}")
-    finally:
-        conn.close()
 
     try:
         bot_thread = threading.Thread(target=lambda: asyncio.run(run_bot()))
