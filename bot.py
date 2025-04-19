@@ -201,12 +201,12 @@ def index():
         return redirect(url_for('login'))
     
     active_users, banned_users, active_configs, total_configs = db.get_stats()
-    return render_template('index.html', stats={
-        'active_users': active_users,
-        'banned_users': banned_users,
-        'active_configs': active_configs,
-        'total_configs': total_configs
-    })
+    stats_text = (
+        "📊 Статистика бота:\n\n"
+        f"👥 Пользователи: {active_users} активных, {banned_users} забаненных\n"
+        f"📂 Конфигурации: {active_configs} активных, {total_configs} всего"
+    )
+    return render_template('index.html', stats_text=stats_text)
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -263,6 +263,15 @@ TEMPLATES = {
     <head>
         <title>WARP Bot Dashboard</title>
         <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+        <style>
+            pre {
+                background-color: #f8f9fa;
+                padding: 15px;
+                border-radius: 5px;
+                white-space: pre-wrap;
+                font-family: monospace;
+            }
+        </style>
     </head>
     <body>
         <div class="container mt-5">
@@ -273,12 +282,7 @@ TEMPLATES = {
                 <div class="alert alert-{{ message[0] }}">{{ message[1] }}</div>
             {% endfor %}
             <h3>Статистика</h3>
-            <ul class="list-group">
-                <li class="list-group-item">Активные пользователи: {{ stats.active_users }}</li>
-                <li class="list-group-item">Забаненные пользователи: {{ stats.banned_users }}</li>
-                <li class="list-group-item">Активные конфигурации: {{ stats.active_configs }}</li>
-                <li class="list-group-item">Всего конфигураций: {{ stats.total_configs }}</li>
-            </ul>
+            <pre>{{ stats_text }}</pre>
         </div>
     </body>
     </html>
@@ -479,7 +483,6 @@ async def users_command(query: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     users = db.get_users_list()
-    
     if not users:
         await query.message.reply_text("Нет пользователей в базе данных.")
         return
@@ -487,7 +490,7 @@ async def users_command(query: Update, context: ContextTypes.DEFAULT_TYPE):
     response = "👥 Последние 50 пользователей:\n\n"
     for user in users:
         status = "🚫" if user[3] else "✅"
-        response += f"{status} ID: {user[0]}, Username: @{user[1]}, Имя: {user[2]}\n"
+        response += f"{status} ID: {user[0]}, Username: @{user[1] or 'N/A'}, Имя: {user[2] or 'N/A'}\n"
     
     await query.message.reply_text(response)
 
