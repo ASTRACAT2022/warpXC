@@ -11,6 +11,8 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     ContextTypes,
+    MessageHandler,
+    filters
 )
 from flask import Flask, render_template_string
 import pandas as pd
@@ -25,27 +27,52 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Конфигурационные переменные
-BOT_TOKEN = "7935425343:AAECbjFJvLHkeTvwHAKDG8uvmy-KiWcPtns"
-ADMIN_TELEGRAM_ID = 650154766
-PORT = os.getenv("PORT", "5000")
-RENDER_EXTERNAL_HOSTNAME = "warpxc.onrender.com"
+BOT_TOKEN = os.getenv("BOT_TOKEN", "7935425343:AAECbjFJvLHkeTvwHAKDG8uvmy-KiWcPtns")
+ADMIN_TELEGRAM_ID = int(os.getenv("ADMIN_TELEGRAM_ID", 650154766))
+PORT = int(os.getenv("PORT", "5000"))
+RENDER_EXTERNAL_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "warpxc.onrender.com")
 
-logger.info(f"Загруженные переменные: BOT_TOKEN={'***' if BOT_TOKEN else 'не задан'}, "
-            f"ADMIN_TELEGRAM_ID={ADMIN_TELEGRAM_ID}, "
-            f"PORT={PORT}, RENDER_EXTERNAL_HOSTNAME={RENDER_EXTERNAL_HOSTNAME}")
-
-# Проверка переменных
-if not BOT_TOKEN:
-    logger.error("BOT_TOKEN не задан")
-    raise ValueError("BOT_TOKEN не задан")
+logger.info("Конфигурация загружена")
 
 # Инициализация Flask
 app = Flask(__name__)
 application = None  # Глобальная переменная для Telegram Application
 
-# Глобальное соединение с базой данных в памяти
-DB_PATH = ":memory:"
-global_conn = None
+# Инициализация базы данных
+def init_db():
+    conn = sqlite3.connect("warp_bot.db", check_same_thread=False)
+    cursor = conn.cursor()
+    
+    # Создаем таблицу пользователей, если она не существует
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS users (
+        telegram_id INTEGER PRIMARY KEY,
+        username TEXT,
+        first_name TEXT,
+        last_name TEXT,
+        first_seen DATETIME,
+        last_config_time DATETIME,
+        is_banned INTEGER DEFAULT 0
+    )
+    ''')
+    
+    # Создаем таблицу конфигов, если она не существует
+    cursor.execute('''
+    CREATE TABLE IF NOT EXISTS configs (
+        config_id TEXT PRIMARY KEY,
+        telegram_id INTEGER,
+        created_at DATETIME,
+        is_active INTEGER DEFAULT 1,
+        FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
+    )
+    ''')
+    
+    conn.commit()
+    logger.info("База данных инициализирована")
+    return conn
+
+# Глобальное соединение с базой данных
+global_conn = init_db()
 
 # Проверка связи с Telegram API
 async def check_telegram_api():
@@ -63,73 +90,21 @@ async def check_telegram_api():
         logger.error(f"Ошибка проверки Telegram API: {e}")
         return False, f"🔴 Отсутствует ({str(e)})"
 
-# Инициализация базы данных и добавление тестовых данных
-def init_db():
-    global global_conn
-    try:
-        global_conn = sqlite3.connect(DB_PATH)
-        c = global_conn.cursor()
-        c.execute('''CREATE TABLE users (
-            telegram_id INTEGER PRIMARY KEY,
-            username TEXT,
-            first_name TEXT,
-            last_name TEXT,
-            first_seen DATETIME,
-            last_config_time TEXT,
-            is_banned INTEGER DEFAULT 0
-        )''')
-        c.execute('''CREATE TABLE configs (
-            config_id TEXT PRIMARY KEY,
-            telegram_id INTEGER,
-            created_at DATETIME,
-            is_active INTEGER DEFAULT 1,
-            FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
-        )''')
-        global_conn.commit()
-        logger.info("База данных инициализирована в памяти")
-
-        # Добавление тестовых данных
-        for i in range(10):
-            telegram_id = 12345 + i
-            c.execute(
-                "INSERT OR IGNORE INTO users (telegram_id, username, first_name, first_seen, is_banned) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (telegram_id, f"test_user_{i}", f"User{i}", datetime.now() - timedelta(hours=i), 0)
-            )
-            c.execute(
-                "INSERT INTO configs (config_id, telegram_id, created_at, is_active) "
-                "VALUES (?, ?, ?, ?)",
-                (str(uuid.uuid4()), telegram_id, datetime.now() - timedelta(hours=i), 1)
-            )
-        global_conn.commit()
-        logger.info("Тестовые данные добавлены")
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка инициализации базы данных или добавления тестовых данных: {e}")
-        raise
-
 # Генерация WARP конфигурации
 def generate_warp_config():
     private_key = f"CS/UQwV5cCjhGdH/1FQbSkRLvYU8Ha1xeTkHVg5rizI={uuid.uuid4().hex[:8]}"
     public_key = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
     config = f"""[Interface]
 PrivateKey = {private_key}
-S1 = 0
-S2 = 0
-Jc = 120
-Jmin = 23
-Jmax = 911
-H1 = 1
-H2 = 2
-H3 = 3
-H4 = 4
+Address = 172.16.0.2/32, 2606:4700:110:8a82:ae4c:ce7e:e5a6:a7fd/128
+DNS = 1.1.1.1, 1.0.0.1, 2606:4700:4700::1111, 2606:4700:4700::1001
 MTU = 1280
-Address = 172.16.0.2, 2606:4700:110:8a82:ae4c:ce7e:e5a6:a7fd
-DNS = 1.1.1.1, 2606:4700:4700::1111, 1.0.0.1, 2606:4700:4700::1001
 
 [Peer]
 PublicKey = {public_key}
 AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = 162.159.192.227:894
+PersistentKeepalive = 25
 """
     return config
 
@@ -149,8 +124,6 @@ def get_stats():
         active_configs = c.fetchone()[0]
         c.execute("SELECT COUNT(*) FROM configs")
         total_configs = c.fetchone()[0]
-        logger.info(f"Статистика: active_users={active_users}, banned_users={banned_users}, "
-                    f"active_configs={active_configs}, total_configs={total_configs}")
         return active_users, banned_users, active_configs, total_configs
     except sqlite3.Error as e:
         logger.error(f"Ошибка получения статистики: {e}")
@@ -174,8 +147,8 @@ def get_activity_by_range(range_type):
             start_time = datetime.now() - timedelta(days=30)
         else:
             start_time = datetime.now() - timedelta(days=1)
+            
         df = pd.read_sql_query(query, global_conn, params=(start_time,))
-        logger.info(f"Активность ({range_type}): {len(df)} записей")
         return df
     except sqlite3.Error as e:
         logger.error(f"Ошибка получения активности: {e}")
@@ -185,7 +158,6 @@ def get_activity_by_range(range_type):
 def generate_ascii_chart(range_type):
     df = get_activity_by_range(range_type)
     if df.empty:
-        logger.warning(f"Нет данных для графика ({range_type})")
         return "Нет данных для графика"
 
     activity_counts = [0] * 24
@@ -195,144 +167,6 @@ def generate_ascii_chart(range_type):
 
     chart = plot(activity_counts, {'height': 10, 'format': '{:8.0f}'})
     return f"Активность ({range_type}):\n{chart}"
-
-# Flask: Главная страница
-@app.route('/')
-async def stats_page():
-    logger.info("Запрос к главной странице")
-    active_users, banned_users, active_configs, total_configs = get_stats()
-    ascii_chart_day = generate_ascii_chart("day")
-    api_status_ok, api_status_message = await check_telegram_api()
-    return render_template_string(
-        """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>WARP Bot Dashboard</title>
-            <script src="https://cdn.tailwindcss.com"></script>
-        </head>
-        <body class="bg-gray-900 text-gray-100">
-            <nav class="bg-gray-800 p-4 shadow">
-                <div class="container mx-auto flex justify-between items-center">
-                    <h1 class="text-2xl font-bold">WARP Bot Dashboard</h1>
-                    <div>
-                        <a href="/" class="text-gray-300 hover:text-white px-3 py-2 rounded">Главная</a>
-                        <a href="/activity/day" class="text-gray-300 hover:text-white px-3 py-2 rounded">24 часа</a>
-                        <a href="/activity/week" class="text-gray-300 hover:text-white px-3 py-2 rounded">Неделя</a>
-                        <a href="/activity/month" class="text-gray-300 hover:text-white px-3 py-2 rounded">Месяц</a>
-                    </div>
-                </div>
-            </nav>
-            <div class="container mx-auto p-6">
-                <h2 class="text-3xl font-semibold mb-6">Статистика</h2>
-                <div class="bg-gray-800 p-4 rounded-lg mb-6">
-                    <p class="text-lg font-medium">
-                        Статус Telegram API: 
-                        <span class="{% if api_status_ok %}text-green-400{% else %}text-red-400{% endif %} font-bold">
-                            {{ api_status_message }}
-                        </span>
-                    </p>
-                </div>
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                    <div class="bg-gray-800 p-6 rounded-lg shadow">
-                        <h3 class="text-lg font-medium text-gray-300">Активные пользователи</h3>
-                        <p class="text-2xl font-bold text-blue-400">{{ active_users }}</p>
-                    </div>
-                    <div class="bg-gray-800 p-6 rounded-lg shadow">
-                        <h3 class="text-lg font-medium text-gray-300">Забаненные пользователи</h3>
-                        <p class="text-2xl font-bold text-red-400">{{ banned_users }}</p>
-                    </div>
-                    <div class="bg-gray-800 p-6 rounded-lg shadow">
-                        <h3 class="text-lg font-medium text-gray-300">Активные конфигурации</h3>
-                        <p class="text-2xl font-bold text-green-400">{{ active_configs }}</p>
-                    </div>
-                    <div class="bg-gray-800 p-6 rounded-lg shadow">
-                        <h3 class="text-lg font-medium text-gray-300">Всего конфигураций</h3>
-                        <p class="text-2xl font-bold text-purple-400">{{ total_configs }}</p>
-                    </div>
-                </div>
-                <h2 class="text-3xl font-semibold mb-6">Активность пользователей</h2>
-                <div class="bg-gray-800 p-6 rounded-lg shadow">
-                    <h3 class="text-xl font-medium mb-4">График активности (24 часа)</h3>
-                    <pre class="font-mono text-sm bg-gray-900 p-4 rounded">{{ ascii_chart_day }}</pre>
-                    <div class="mt-4 flex space-x-4">
-                        <a href="/activity/day" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">24 часа</a>
-                        <a href="/activity/week" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Неделя</a>
-                        <a href="/activity/month" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Месяц</a>
-                    </div>
-                </div>
-            </div>
-        </body>
-        </html>
-        """,
-        active_users=active_users,
-        banned_users=banned_users,
-        active_configs=active_configs,
-        total_configs=total_configs,
-        ascii_chart_day=ascii_chart_day,
-        api_status_ok=api_status_ok,
-        api_status_message=api_status_message
-    )
-
-# Flask: График активности
-@app.route('/activity/<range_type>')
-async def activity_plot(range_type):
-    logger.info(f"Запрос к графику активности ({range_type})")
-    if range_type not in ["day", "week", "month"]:
-        return "Недопустимый диапазон", 400
-    ascii_chart = generate_ascii_chart(range_type)
-    api_status_ok, api_status_message = await check_telegram_api()
-    return render_template_string(
-        """
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>WARP Bot Activity</title>
-            <script src="https://cdn.tailwindcss.com"></script>
-        </head>
-        <body class="bg-gray-900 text-gray-100">
-            <nav class="bg-gray-800 p-4 shadow">
-                <div class="container mx-auto flex justify-between items-center">
-                    <h1 class="text-2xl font-bold">WARP Bot Dashboard</h1>
-                    <div>
-                        <a href="/" class="text-gray-300 hover:text-white px-3 py-2 rounded">Главная</a>
-                        <a href="/activity/day" class="text-gray-300 hover:text-white px-3 py-2 rounded">24 часа</a>
-                        <a href="/activity/week" class="text-gray-300 hover:text-white px-3 py-2 rounded">Неделя</a>
-                        <a href="/activity/month" class="text-gray-300 hover:text-white px-3 py-2 rounded">Месяц</a>
-                    </div>
-                </div>
-            </nav>
-            <div class="container mx-auto p-6">
-                <h2 class="text-3xl font-semibold mb-6">Активность пользователей ({{ range_type }})</h2>
-                <div class="bg-gray-800 p-4 rounded-lg mb-6">
-                    <p class="text-lg font-medium">
-                        Статус Telegram API: 
-                        <span class="{% if api_status_ok %}text-green-400{% else %}text-red-400{% endif %} font-bold">
-                            {{ api_status_message }}
-                        </span>
-                    </p>
-                </div>
-                <div class="bg-gray-800 p-6 rounded-lg shadow">
-                    <pre class="font-mono text-sm bg-gray-900 p-4 rounded">{{ ascii_chart }}</pre>
-                    <div class="mt-4 flex space-x-4">
-                        <a href="/activity/day" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">24 часа</a>
-                        <a href="/activity/week" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Неделя</a>
-                        <a href="/activity/month" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700">Месяц</a>
-                    </div>
-                </div>
-            </div>
-        </body>
-        </html>
-        """,
-        range_type=range_type,
-        ascii_chart=ascii_chart,
-        api_status_ok=api_status_ok,
-        api_status_message=api_status_message
-    )
 
 # Клавиатура бота
 def get_main_keyboard(is_admin_user=False):
@@ -362,267 +196,462 @@ def get_main_keyboard(is_admin_user=False):
 # Обработчик /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
+    logger.info(f"Новый пользователь: {user.id}")
+    
     try:
         c = global_conn.cursor()
         c.execute(
-            "INSERT OR REPLACE INTO users (telegram_id, username, first_name, last_name, first_seen, is_banned) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (user.id, user.username, user.first_name, user.last_name, datetime.now(), 0)
+            "INSERT OR IGNORE INTO users (telegram_id, username, first_name, last_name, first_seen) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (user.id, user.username, user.first_name, user.last_name, datetime.now())
         )
         global_conn.commit()
-        logger.info(f"Пользователь {user.id} добавлен/обновлён")
     except sqlite3.Error as e:
         logger.error(f"Ошибка записи пользователя: {e}")
+        await update.message.reply_text("Произошла ошибка. Попробуйте позже.")
+        return
 
     is_admin_user = is_admin(user.id)
     reply_markup = get_main_keyboard(is_admin_user)
+    
     await update.message.reply_text(
-        f"Добро пожаловать, {user.first_name or 'пользователь'}! 👋\n"
-        f"ID: {user.id}\n"
-        "Бот для WARP конфигураций. Выберите действие:",
+        f"Привет, {user.first_name or 'пользователь'}! 👋\n"
+        "Я бот для генерации WARP конфигураций. Выберите действие:",
         reply_markup=reply_markup
     )
 
 # Обработчик кнопок
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
+    await query.answer()
+    
     user = query.from_user
     is_admin_user = is_admin(user.id)
-    reply_markup = get_main_keyboard(is_admin_user)
-    await query.answer()
-
+    
     if query.data == "get_config":
         await get_config(update, context)
     elif query.data == "help":
         help_text = (
-            "Бот для WARP конфигураций. Команды:\n"
-            "/start - Начать\n"
-            "/getconfig - Получить WARP конфиг\n"
-            "Админ-команды:\n"
-            "/stats - Статистика\n"
-            "/users - Пользователи\n"
-            "/ban <id> - Забанить\n"
-            "/unban <id> - Разбанить\n"
-            "/broadcast <текст> - Рассылка\n"
-            "/hourly_activity - График активности"
+            "📚 Справка по боту:\n\n"
+            "Этот бот генерирует конфигурации для WARP.\n\n"
+            "Основные команды:\n"
+            "/start - Начать работу с ботом\n"
+            "/getconfig - Получить конфигурацию\n\n"
+            "Конфигурацию можно запрашивать раз в 24 часа."
         )
-        await query.message.reply_text(help_text, reply_markup=reply_markup)
+        await query.edit_message_text(help_text, reply_markup=get_main_keyboard(is_admin_user))
     elif query.data == "stats" and is_admin_user:
-        await stats(update, context)
+        await stats_command(update, context)
     elif query.data == "users" and is_admin_user:
-        await users(update, context)
-    elif query.data in ["activity_day", "activity_week", "activity_month"] and is_admin_user:
-        range_type = {"activity_day": "day", "activity_week": "week", "activity_month": "month"}[query.data]
+        await users_command(update, context)
+    elif query.data.startswith("activity_") and is_admin_user:
+        range_type = query.data.split("_")[1]
         ascii_chart = generate_ascii_chart(range_type)
-        await query.message.reply_text(
+        await query.edit_message_text(
             f"Активность ({range_type}):\n```\n{ascii_chart}\n```",
-            reply_markup=reply_markup,
+            reply_markup=get_main_keyboard(is_admin_user),
             parse_mode="Markdown"
         )
 
 # Обработчик /getconfig
 async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    c = global_conn.cursor()
-
-    c.execute("SELECT is_banned, last_config_time FROM users WHERE telegram_id = ?", (user.id,))
-    result = c.fetchone()
-    if result and result[0] == 1:
-        await update.message.reply_text("Вы забанены", reply_markup=get_main_keyboard())
-        return
-
-    if result and result[1]:
-        last_time = datetime.fromisoformat(result[1])
-        if datetime.now() - last_time < timedelta(hours=24):
-            await update.message.reply_text(
-                "Конфиг можно запрашивать раз в 24 часа",
-                reply_markup=get_main_keyboard()
-            )
-            return
-
-    config = generate_warp_config()
-    config_id = str(uuid.uuid4())
-    c.execute(
-        "INSERT INTO configs (config_id, telegram_id, created_at, is_active) VALUES (?, ?, ?, ?)",
-        (config_id, user.id, datetime.now(), 1)
-    )
-    c.execute(
-        "UPDATE users SET last_config_time = ? WHERE telegram_id = ?",
-        (datetime.now().isoformat(), user.id)
-    )
-    global_conn.commit()
-    logger.info(f"Конфигурация создана для пользователя {user.id}")
-
-    config_path = f"/tmp/config_{user.id}.conf"
-    with open(config_path, "w") as f:
-        f.write(config)
+    logger.info(f"Запрос конфига от пользователя {user.id}")
+    
     try:
-        with open(config_path, "rb") as f:
-            await update.message.reply_document(
+        c = global_conn.cursor()
+        
+        # Проверка бана
+        c.execute("SELECT is_banned FROM users WHERE telegram_id = ?", (user.id,))
+        result = c.fetchone()
+        if result and result[0] == 1:
+            await update.message.reply_text("❌ Вы забанены и не можете получать конфигурации.")
+            return
+        
+        # Проверка времени последнего запроса
+        c.execute("SELECT last_config_time FROM users WHERE telegram_id = ?", (user.id,))
+        result = c.fetchone()
+        if result and result[0]:
+            last_time = datetime.fromisoformat(result[0])
+            if datetime.now() - last_time < timedelta(hours=24):
+                wait_time = 24 - (datetime.now() - last_time).total_seconds() / 3600
+                await update.message.reply_text(
+                    f"⏳ Вы можете запрашивать конфигурацию раз в 24 часа. "
+                    f"Попробуйте снова через {wait_time:.1f} часов."
+                )
+                return
+        
+        # Генерация конфига
+        config = generate_warp_config()
+        config_id = str(uuid.uuid4())
+        
+        # Сохранение в БД
+        c.execute(
+            "INSERT INTO configs (config_id, telegram_id, created_at) VALUES (?, ?, ?)",
+            (config_id, user.id, datetime.now())
+        )
+        c.execute(
+            "UPDATE users SET last_config_time = ? WHERE telegram_id = ?",
+            (datetime.now().isoformat(), user.id)
+        )
+        global_conn.commit()
+        
+        # Отправка конфига
+        with open("warp.conf", "w") as f:
+            f.write(config)
+        
+        with open("warp.conf", "rb") as f:
+            await context.bot.send_document(
+                chat_id=user.id,
                 document=f,
                 filename="warp.conf",
-                caption="Ваша WARP конфигурация",
-                reply_markup=get_main_keyboard(is_admin(user.id))
+                caption="Ваша WARP конфигурация"
             )
-    finally:
-        if os.path.exists(config_path):
-            os.remove(config_path)
+        
+        os.remove("warp.conf")
+        logger.info(f"Конфиг отправлен пользователю {user.id}")
+        
+    except Exception as e:
+        logger.error(f"Ошибка при генерации конфига: {e}")
+        await update.message.reply_text("Произошла ошибка. Попробуйте позже.")
 
 # Обработчик /stats
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Только для админа")
+        await update.message.reply_text("❌ Эта команда только для администратора.")
         return
+    
     active_users, banned_users, active_configs, total_configs = get_stats()
-    stats_message = (
-        f"📊 Статистика:\n"
-        f"Активные пользователи: {active_users}\n"
-        f"Забаненные: {banned_users}\n"
-        f"Активные конфиги: {active_configs}\n"
-        f"Всего конфигов: {total_configs}"
+    response = (
+        "📊 Статистика бота:\n\n"
+        f"👥 Пользователи: {active_users} активных, {banned_users} забаненных\n"
+        f"📂 Конфигурации: {active_configs} активных, {total_configs} всего\n\n"
+        "Используйте кнопки ниже для просмотра активности:"
     )
-    await update.message.reply_text(stats_message, reply_markup=get_main_keyboard(is_admin=True))
+    
+    await update.message.reply_text(
+        response,
+        reply_markup=get_main_keyboard(is_admin=True)
+    )
 
 # Обработчик /users
-async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Только для админа")
+        await update.message.reply_text("❌ Эта команда только для администратора.")
         return
-    c = global_conn.cursor()
-    c.execute("SELECT telegram_id, username, first_name, is_banned FROM users")
-    users = c.fetchall()
-    users_message = "👥 Пользователи:\n\n"
-    for user in users:
-        status = "🚫 Забанен" if user[3] else "✅ Активен"
-        users_message += f"ID: {user[0]}\nUsername: {user[1] or 'N/A'}\nИмя: {user[2]}\nСтатус: {status}\n\n"
-    await update.message.reply_text(users_message, reply_markup=get_main_keyboard(is_admin=True))
+    
+    try:
+        c = global_conn.cursor()
+        c.execute("SELECT telegram_id, username, first_name, is_banned FROM users ORDER BY first_seen DESC LIMIT 50")
+        users = c.fetchall()
+        
+        if not users:
+            await update.message.reply_text("Нет пользователей в базе данных.")
+            return
+        
+        response = "👥 Последние 50 пользователей:\n\n"
+        for user in users:
+            status = "🚫" if user[3] else "✅"
+            response += f"{status} ID: {user[0]}, Username: @{user[1]}, Имя: {user[2]}\n"
+        
+        await update.message.reply_text(response)
+        
+    except Exception as e:
+        logger.error(f"Ошибка при получении списка пользователей: {e}")
+        await update.message.reply_text("Произошла ошибка при получении списка пользователей.")
 
 # Обработчик /ban
-async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Только для админа")
+        await update.message.reply_text("❌ Эта команда только для администратора.")
         return
+    
     if not context.args:
-        await update.message.reply_text("Укажите ID: /ban <telegram_id>")
+        await update.message.reply_text("Использование: /ban <user_id>")
         return
+    
     try:
-        target_id = int(context.args[0])
+        user_id = int(context.args[0])
         c = global_conn.cursor()
-        c.execute("UPDATE users SET is_banned = 1 WHERE telegram_id = ?", (target_id,))
+        
+        # Проверяем, есть ли пользователь
+        c.execute("SELECT 1 FROM users WHERE telegram_id = ?", (user_id,))
+        if not c.fetchone():
+            await update.message.reply_text("Пользователь не найден.")
+            return
+        
+        # Баним
+        c.execute("UPDATE users SET is_banned = 1 WHERE telegram_id = ?", (user_id,))
         global_conn.commit()
-        await update.message.reply_text(f"Пользователь {target_id} забанен", reply_markup=get_main_keyboard(is_admin=True))
+        
+        await update.message.reply_text(f"Пользователь {user_id} забанен.")
+        
+        # Пытаемся уведомить пользователя
         try:
-            await context.bot.send_message(chat_id=target_id, text="Вы забанены")
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="⛔ Вы были забанены администратором."
+            )
         except Exception as e:
-            logger.warning(f"Не удалось уведомить ID {target_id}: {e}")
+            logger.warning(f"Не удалось уведомить пользователя {user_id}: {e}")
+            
     except ValueError:
-        await update.message.reply_text("Неверный ID", reply_markup=get_main_keyboard(is_admin=True))
+        await update.message.reply_text("Неверный ID пользователя.")
+    except Exception as e:
+        logger.error(f"Ошибка при бане пользователя: {e}")
+        await update.message.reply_text("Произошла ошибка при выполнении команды.")
 
 # Обработчик /unban
-async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Только для админа")
+        await update.message.reply_text("❌ Эта команда только для администратора.")
         return
+    
     if not context.args:
-        await update.message.reply_text("Укажите ID: /unban <telegram_id>")
+        await update.message.reply_text("Использование: /unban <user_id>")
         return
+    
     try:
-        target_id = int(context.args[0])
+        user_id = int(context.args[0])
         c = global_conn.cursor()
-        c.execute("UPDATE users SET is_banned = 0 WHERE telegram_id = ?", (target_id,))
+        
+        # Проверяем, есть ли пользователь
+        c.execute("SELECT 1 FROM users WHERE telegram_id = ?", (user_id,))
+        if not c.fetchone():
+            await update.message.reply_text("Пользователь не найден.")
+            return
+        
+        # Разбаниваем
+        c.execute("UPDATE users SET is_banned = 0 WHERE telegram_id = ?", (user_id,))
         global_conn.commit()
-        await update.message.reply_text(f"Пользователь {target_id} разбанен", reply_markup=get_main_keyboard(is_admin=True))
+        
+        await update.message.reply_text(f"Пользователь {user_id} разбанен.")
+        
+        # Пытаемся уведомить пользователя
         try:
-            await context.bot.send_message(chat_id=target_id, text="Вы разбанены")
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="✅ Вы были разбанены администратором."
+            )
         except Exception as e:
-            logger.warning(f"Не удалось уведомить ID {target_id}: {e}")
+            logger.warning(f"Не удалось уведомить пользователя {user_id}: {e}")
+            
     except ValueError:
-        await update.message.reply_text("Неверный ID", reply_markup=get_main_keyboard(is_admin=True))
+        await update.message.reply_text("Неверный ID пользователя.")
+    except Exception as e:
+        logger.error(f"Ошибка при разбане пользователя: {e}")
+        await update.message.reply_text("Произошла ошибка при выполнении команды.")
 
 # Обработчик /broadcast
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Только для админа")
+        await update.message.reply_text("❌ Эта команда только для администратора.")
         return
+    
     if not context.args:
-        await update.message.reply_text("Укажите сообщение: /broadcast <текст>")
+        await update.message.reply_text("Использование: /broadcast <сообщение>")
         return
+    
     message = " ".join(context.args)
     c = global_conn.cursor()
     c.execute("SELECT telegram_id FROM users WHERE is_banned = 0")
     users = c.fetchall()
-    success_count = 0
+    
+    if not users:
+        await update.message.reply_text("Нет активных пользователей для рассылки.")
+        return
+    
+    success = 0
+    failed = 0
+    
+    await update.message.reply_text(f"Начинаю рассылку для {len(users)} пользователей...")
+    
     for user in users:
         try:
-            await context.bot.send_message(chat_id=user[0], text=message)
-            success_count += 1
+            await context.bot.send_message(
+                chat_id=user[0],
+                text=f"📢 Сообщение от администратора:\n\n{message}"
+            )
+            success += 1
         except Exception as e:
-            logger.warning(f"Не удалось отправить сообщение ID {user[0]}: {e}")
+            failed += 1
+            logger.warning(f"Не удалось отправить сообщение пользователю {user[0]}: {e}")
+        
+        # Небольшая задержка, чтобы не превысить лимиты Telegram
+        await asyncio.sleep(0.1)
+    
     await update.message.reply_text(
-        f"Рассылка завершена. Отправлено {success_count} пользователям",
-        reply_markup=get_main_keyboard(is_admin=True)
-    )
-
-# Обработчик /hourly_activity
-async def hourly_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("Только для админа")
-        return
-    ascii_chart = generate_ascii_chart("day")
-    await update.message.reply_text(
-        f"Активность (24 часа):\n```\n{ascii_chart}\n```",
-        reply_markup=get_main_keyboard(is_admin=True),
-        parse_mode="Markdown"
+        f"Рассылка завершена:\n"
+        f"✅ Успешно: {success}\n"
+        f"❌ Не удалось: {failed}"
     )
 
 # Обработчик ошибок
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Ошибка: {context.error}")
+    logger.error(f"Ошибка: {context.error}", exc_info=context.error)
+    if update and update.effective_message:
+        await update.effective_message.reply_text("Произошла ошибка. Пожалуйста, попробуйте позже.")
+
+# Flask: Главная страница
+@app.route('/')
+async def stats_page():
+    active_users, banned_users, active_configs, total_configs = get_stats()
+    ascii_chart_day = generate_ascii_chart("day")
+    api_status_ok, api_status_message = await check_telegram_api()
+    
+    return render_template_string('''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>WARP Bot Dashboard</title>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+                .container { max-width: 1000px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+                h1 { color: #333; }
+                .status { padding: 10px; margin: 10px 0; border-radius: 4px; }
+                .online { background-color: #d4edda; color: #155724; }
+                .offline { background-color: #f8d7da; color: #721c24; }
+                .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin: 20px 0; }
+                .stat-card { background: white; border: 1px solid #ddd; border-radius: 4px; padding: 15px; text-align: center; }
+                .stat-value { font-size: 24px; font-weight: bold; margin: 10px 0; }
+                pre { background: #f8f9fa; padding: 15px; border-radius: 4px; overflow-x: auto; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>WARP Bot Dashboard</h1>
+                
+                <div class="status {{ 'online' if api_status_ok else 'offline' }}">
+                    Статус Telegram API: {{ api_status_message }}
+                </div>
+                
+                <div class="stats">
+                    <div class="stat-card">
+                        <div>Активные пользователи</div>
+                        <div class="stat-value">{{ active_users }}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div>Забаненные пользователи</div>
+                        <div class="stat-value">{{ banned_users }}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div>Активные конфиги</div>
+                        <div class="stat-value">{{ active_configs }}</div>
+                    </div>
+                    <div class="stat-card">
+                        <div>Всего конфигов</div>
+                        <div class="stat-value">{{ total_configs }}</div>
+                    </div>
+                </div>
+                
+                <h2>Активность пользователей (24 часа)</h2>
+                <pre>{{ ascii_chart_day }}</pre>
+                
+                <div style="margin-top: 20px;">
+                    <a href="/activity/day" style="margin-right: 10px;">24 часа</a>
+                    <a href="/activity/week" style="margin-right: 10px;">Неделя</a>
+                    <a href="/activity/month">Месяц</a>
+                </div>
+            </div>
+        </body>
+        </html>
+    ''',
+    active_users=active_users,
+    banned_users=banned_users,
+    active_configs=active_configs,
+    total_configs=total_configs,
+    ascii_chart_day=ascii_chart_day,
+    api_status_ok=api_status_ok,
+    api_status_message=api_status_message)
+
+# Flask: График активности
+@app.route('/activity/<range_type>')
+async def activity_route(range_type):
+    if range_type not in ["day", "week", "month"]:
+        return "Недопустимый диапазон", 400
+    
+    ascii_chart = generate_ascii_chart(range_type)
+    api_status_ok, api_status_message = await check_telegram_api()
+    
+    return render_template_string('''
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>WARP Bot Activity</title>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <style>
+                body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f5f5f5; }
+                .container { max-width: 1000px; margin: 0 auto; background: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+                h1 { color: #333; }
+                pre { background: #f8f9fa; padding: 15px; border-radius: 4px; overflow-x: auto; }
+                a { color: #007bff; text-decoration: none; }
+                a:hover { text-decoration: underline; }
+            </style>
+        </head>
+        <body>
+            <div class="container">
+                <h1>Активность пользователей ({{ range_type }})</h1>
+                <pre>{{ ascii_chart }}</pre>
+                <div style="margin-top: 20px;">
+                    <a href="/activity/day" style="margin-right: 10px;">24 часа</a>
+                    <a href="/activity/week" style="margin-right: 10px;">Неделя</a>
+                    <a href="/activity/month" style="margin-right: 10px;">Месяц</a>
+                    <a href="/">На главную</a>
+                </div>
+            </div>
+        </body>
+        </html>
+    ''',
+    range_type=range_type,
+    ascii_chart=ascii_chart,
+    api_status_ok=api_status_ok,
+    api_status_message=api_status_message)
 
 # Запуск бота
 async def run_bot():
     global application
-    logger.info("Создание Application")
+    
     application = Application.builder().token(BOT_TOKEN).build()
-
+    
+    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button))
     application.add_handler(CommandHandler("getconfig", get_config))
-    application.add_handler(CommandHandler("stats", stats))
-    application.add_handler(CommandHandler("users", users))
-    application.add_handler(CommandHandler("ban", ban))
-    application.add_handler(CommandHandler("unban", unban))
-    application.add_handler(CommandHandler("broadcast", broadcast))
-    application.add_handler(CommandHandler("hourly_activity", hourly_activity))
+    application.add_handler(CommandHandler("stats", stats_command))
+    application.add_handler(CommandHandler("users", users_command))
+    application.add_handler(CommandHandler("ban", ban_command))
+    application.add_handler(CommandHandler("unban", unban_command))
+    application.add_handler(CommandHandler("broadcast", broadcast_command))
+    
+    application.add_handler(CallbackQueryHandler(button_handler))
+    
     application.add_error_handler(error_handler)
-    logger.info("Обработчики зарегистрированы")
+    
+    # Запуск бота
+    await application.initialize()
+    await application.start()
+    
+    # Удаляем вебхук и запускаем polling
+    await application.bot.delete_webhook(drop_pending_updates=True)
+    await application.updater.start_polling()
+    
+    logger.info("Бот запущен в режиме polling")
 
-    logger.info("Запуск polling")
-    try:
-        await application.bot.delete_webhook(drop_pending_updates=True)
-        await application.initialize()
-        await application.start()
-        await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-        logger.info("Polling запущен")
-    except Exception as e:
-        logger.error(f"Ошибка polling: {e}")
-        raise
+# Запуск Flask
+def run_flask():
+    app.run(host='0.0.0.0', port=PORT)
 
 # Главная функция
 def main():
-    logger.info("Запуск приложения")
-    init_db()
-
-    try:
-        bot_thread = threading.Thread(target=lambda: asyncio.run(run_bot()))
-        bot_thread.daemon = True
-        bot_thread.start()
-        logger.info("Бот запущен в режиме polling")
-    except Exception as e:
-        logger.error(f"Ошибка запуска бота: {e}")
-        raise
-
-    app.run(host='0.0.0.0', port=int(PORT))
+    # Запускаем бота в отдельном потоке
+    bot_thread = threading.Thread(target=lambda: asyncio.run(run_bot()))
+    bot_thread.daemon = True
+    bot_thread.start()
+    
+    # Запускаем Flask в основном потоке
+    run_flask()
 
 if __name__ == "__main__":
     main()
