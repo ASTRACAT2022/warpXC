@@ -28,8 +28,8 @@ BOT_TOKEN = "7935425343:AAECbjFJvLHkeTvwHAKDG8uvmy-KiWcPtns"
 ADMIN_TELEGRAM_ID = 650154766  # Ваш ID в Telegram
 DB_FILE = "warp_bot.db"
 WEB_SECRET_KEY = "your-secret-key"  # Секретный ключ для Flask
-ADMIN_USERNAME = "admin"  # Имя пользователя для входа в веб-интерфейс
-ADMIN_PASSWORD_HASH = generate_password_hash("your-secure-password")  # Пароль (замените на свой)
+ADMIN_USERNAME = "astracat"  # Имя пользователя для входа в веб-интерфейс
+ADMIN_PASSWORD_HASH = generate_password_hash("astracat")  # Пароль
 
 # Инициализация Flask
 app = Flask(__name__)
