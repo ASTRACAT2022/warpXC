@@ -3,20 +3,22 @@ import os
 import logging
 import asyncio
 import threading
+import uuid
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
+    MessageHandler,
+    filters,
     ContextTypes,
 )
 from telegram.error import Conflict, NetworkError, TelegramError
-import matplotlib.pyplot as plt
 from datetime import datetime, timedelta
 import pandas as pd
-from flask import Flask, render_template_string, send_file
-import io
+from flask import Flask, render_template_string
+from asciichartpy import plot
 
 # Настройка логирования
 logging.basicConfig(
@@ -27,8 +29,6 @@ logger = logging.getLogger(__name__)
 
 # Загрузка переменных окружения
 load_dotenv()
-
-# Проверка переменных окружения
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")
 PORT = os.getenv("PORT", "5000")
@@ -58,16 +58,22 @@ def init_db():
     try:
         conn = sqlite3.connect("warp_bot.db")
         c = conn.cursor()
-        c.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                username TEXT,
-                first_seen DATETIME,
-                is_banned INTEGER DEFAULT 0
-            )
-        """
-        )
+        c.execute('''CREATE TABLE IF NOT EXISTS users (
+            telegram_id INTEGER PRIMARY KEY,
+            username TEXT,
+            first_name TEXT,
+            last_name TEXT,
+            first_seen DATETIME,
+            last_config_time TEXT,
+            is_banned INTEGER DEFAULT 0
+        )''')
+        c.execute('''CREATE TABLE IF NOT EXISTS configs (
+            config_id TEXT PRIMARY KEY,
+            telegram_id INTEGER,
+            created_at DATETIME,
+            is_active INTEGER DEFAULT 1,
+            FOREIGN KEY (telegram_id) REFERENCES users (telegram_id)
+        )''')
         conn.commit()
         logger.info("База данных инициализирована успешно.")
     except sqlite3.Error as e:
@@ -76,28 +82,35 @@ def init_db():
     finally:
         conn.close()
 
-# Проверка, является ли пользователь админом
-def is_admin(user_id):
-    return user_id == ADMIN_TELEGRAM_ID
+# Генерация WARP конфигурации
+def generate_warp_config():
+    private_key = f"CS/UQwV5cCjhGdH/1FQbSkRLvYU8Ha1xeTkHVg5rizI={uuid.uuid4().hex[:8]}"
+    public_key = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+    config = f"""[Interface]
+PrivateKey = {private_key}
+S1 = 0
+S2 = 0
+Jc = 120
+Jmin = 23
+Jmax = 911
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
+MTU = 1280
+Address = 172.16.0.2, 2606:4700:110:8a82:ae4c:ce7e:e5a6:a7fd
+DNS = 1.1.1.1, 2606:4700:4700::1111, 1.0.0.1, 2606:4700:4700::1001
 
-# Регистрация пользователя
-def register_user(user_id, username):
-    try:
-        conn = sqlite3.connect("warp_bot.db")
-        c = conn.cursor()
-        c.execute(
-            """
-            INSERT OR IGNORE INTO users (user_id, username, first_seen)
-            VALUES (?, ?, ?)
-        """,
-            (user_id, username, datetime.now()),
-        )
-        conn.commit()
-        logger.info(f"Пользователь {username} (ID: {user_id}) зарегистрирован.")
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка регистрации пользователя: {e}")
-    finally:
-        conn.close()
+[Peer]
+PublicKey = {public_key}
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = 162.159.192.227:894
+"""
+    return config
+
+# Проверка, является ли пользователь админом
+def is_admin(telegram_id):
+    return telegram_id == ADMIN_TELEGRAM_ID
 
 # Получение статистики
 def get_stats():
@@ -108,44 +121,19 @@ def get_stats():
         active_users = c.fetchone()[0]
         c.execute("SELECT COUNT(*) FROM users WHERE is_banned = 1")
         banned_users = c.fetchone()[0]
-        return active_users, banned_users
+        c.execute("SELECT COUNT(*) FROM configs WHERE is_active = 1")
+        active_configs = c.fetchone()[0]
+        c.execute("SELECT COUNT(*) FROM configs")
+        total_configs = c.fetchone()[0]
+        return active_users, banned_users, active_configs, total_configs
     except sqlite3.Error as e:
         logger.error(f"Ошибка получения статистики: {e}")
-        return 0, 0
+        return 0, 0, 0, 0
     finally:
         conn.close()
 
-# Получение списка пользователей
-def get_users():
-    try:
-        conn = sqlite3.connect("warp_bot.db")
-        c = conn.cursor()
-        c.execute("SELECT user_id, username, is_banned FROM users")
-        return c.fetchall()
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка получения списка пользователей: {e}")
-        return []
-    finally:
-        conn.close()
-
-# Бан/разбан пользователя
-def set_ban_status(user_id, ban_status):
-    try:
-        conn = sqlite3.connect("warp_bot.db")
-        c = conn.cursor()
-        c.execute(
-            "UPDATE users SET is_banned = ? WHERE user_id = ?",
-            (ban_status, user_id),
-        )
-        conn.commit()
-        logger.info(f"Пользователь ID {user_id} {'забанен' if ban_status else 'разбанен'}.")
-    except sqlite3.Error as e:
-        logger.error(f"Ошибка изменения статуса бана: {e}")
-    finally:
-        conn.close()
-
-# Анализ активности пользователей по часам
-def get_hourly_activity():
+# Получение активности по диапазонам времени
+def get_activity_by_range(range_type):
     try:
         conn = sqlite3.connect("warp_bot.db")
         query = """
@@ -155,7 +143,14 @@ def get_hourly_activity():
             GROUP BY hour
             ORDER BY hour
         """
-        start_time = datetime.now() - timedelta(days=1)
+        if range_type == "day":
+            start_time = datetime.now() - timedelta(days=1)
+        elif range_type == "week":
+            start_time = datetime.now() - timedelta(days=7)
+        elif range_type == "month":
+            start_time = datetime.now() - timedelta(days=30)
+        else:
+            start_time = datetime.now() - timedelta(days=1)
         df = pd.read_sql_query(query, conn, params=(start_time,))
         return df
     except sqlite3.Error as e:
@@ -164,63 +159,29 @@ def get_hourly_activity():
     finally:
         conn.close()
 
-# Генерация графика активности
-def generate_activity_plot():
-    df = get_hourly_activity()
+# Генерация текстового графика
+def generate_ascii_chart(range_type):
+    df = get_activity_by_range(range_type)
     if df.empty:
-        logger.warning("Нет данных для графика активности за последние 24 часа.")
-        return None
+        logger.warning(f"Нет данных для графика активности ({range_type}).")
+        return "Нет данных для отображения графика."
 
-    plt.figure(figsize=(10, 6))
-    plt.bar(df['hour'], df['activity_count'], color='skyblue')
-    plt.xlabel('Час дня')
-    plt.ylabel('Количество действий')
-    plt.title('Активность пользователей по часам (последние 24 часа)')
-    plt.xticks(range(24))
-    plt.grid(True, axis='y', linestyle='--', alpha=0.7)
+    # Заполняем массив для 24 часов
+    activity_counts = [0] * 24
+    for _, row in df.iterrows():
+        hour = int(row['hour'])
+        activity_counts[hour] = row['activity_count']
 
-    buffer = io.BytesIO()
-    plt.savefig(buffer, format='png', bbox_inches='tight')
-    buffer.seek(0)
-    plt.close()
-    return buffer
-
-# Генерация конфигурации WARP
-def generate_warp_config(user_id):
-    try:
-        config = (
-            "[Interface]\n"
-            "PrivateKey = CS/UQwV5cCjhGdH/1FQbSkRLvYU8Ha1xeTkHVg5rizI=\n"
-            "S1 = 0\n"
-            "S2 = 0\n"
-            "Jc = 120\n"
-            "Jmin = 23\n"
-            "Jmax = 911\n"
-            "H1 = 1\n"
-            "H2 = 2\n"
-            "H3 = 3\n"
-            "H4 = 4\n"
-            "MTU = 1280\n"
-            "Address = 172.16.0.2, 2606:4700:110:8a82:ae4c:ce7e:e5a6:a7fd\n"
-            "DNS = 1.1.1.1, 2606:4700:4700::1111, 1.0.0.1, 2606:4700:4700::1001\n\n"
-            "[Peer]\n"
-            "PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=\n"
-            "AllowedIPs = 0.0.0.0/0, ::/0\n"
-            "Endpoint = 162.159.192.227:894"
-        )
-        config_path = f"/tmp/warp_config_{user_id}.conf"
-        with open(config_path, "w") as f:
-            f.write(config)
-        return config_path
-    except Exception as e:
-        logger.error(f"Ошибка генерации конфигурации: {e}")
-        return None
+    # Генерируем ASCII-график
+    chart = plot(activity_counts, {'height': 10, 'format': '{:8.0f}'})
+    return f"Активность пользователей ({range_type}):\n{chart}"
 
 # Flask маршрут для главной страницы
 @app.route('/')
 def stats_page():
     logger.info("Запрос к главной странице статистики")
-    active_users, banned_users = get_stats()
+    active_users, banned_users, active_configs, total_configs = get_stats()
+    ascii_chart_day = generate_ascii_chart("day")
     return render_template_string(
         """
         <!DOCTYPE html>
@@ -228,59 +189,109 @@ def stats_page():
         <head>
             <meta charset="UTF-8">
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
-            <title>WARP Bot Statistics</title>
-            <style>
-                body {
-                    font-family: Arial, sans-serif;
-                    background-color: #f0f0f0;
-                    margin: 0;
-                    padding: 20px;
-                }
-                .container {
-                    max-width: 800px;
-                    margin: 0 auto;
-                    background-color: #fff;
-                    padding: 20px;
-                    border-radius: 8px;
-                    box-shadow: 0 0 10px rgba(0,0,0,0.1);
-                }
-                h1, h2 {
-                    color: #333;
-                }
-                p {
-                    font-size: 16px;
-                    color: #555;
-                }
-                img {
-                    max-width: 100%;
-                    height: auto;
-                    margin-top: 20px;
-                }
-            </style>
+            <title>WARP Bot Dashboard</title>
+            <script src="https://cdn.tailwindcss.com"></script>
         </head>
-        <body>
-            <div class="container">
-                <h1>WARP Bot Statistics</h1>
-                <p><strong>Active Users:</strong> {{ active_users }}</p>
-                <p><strong>Banned Users:</strong> {{ banned_users }}</p>
-                <h2>Hourly Activity (Last 24 Hours)</h2>
-                <img src="/activity_plot" alt="Hourly Activity Graph">
+        <body class="bg-gray-900 text-gray-100">
+            <nav class="bg-gray-800 p-4 shadow">
+                <div class="container mx-auto flex justify-between items-center">
+                    <h1 class="text-2xl font-bold">WARP Bot Dashboard</h1>
+                    <div>
+                        <a href="/" class="text-gray-300 hover:text-white px-3 py-2 rounded">Главная</a>
+                        <a href="/activity/day" class="text-gray-300 hover:text-white px-3 py-2 rounded">24 часа</a>
+                        <a href="/activity/week" class="text-gray-300 hover:text-white px-3 py-2 rounded">Неделя</a>
+                        <a href="/activity/month" class="text-gray-300 hover:text-white px-3 py-2 rounded">Месяц</a>
+                    </div>
+                </div>
+            </nav>
+            <div class="container mx-auto p-6">
+                <h2 class="text-3xl font-semibold mb-6">Статистика</h2>
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+                    <div class="bg-gray-800 p-6 rounded-lg shadow hover:shadow-lg transition">
+                        <h3 class="text-lg font-medium text-gray-300">Активные пользователи</h3>
+                        <p class="text-2xl font-bold text-blue-400">{{ active_users }}</p>
+                    </div>
+                    <div class="bg-gray-800 p-6 rounded-lg shadow hover:shadow-lg transition">
+                        <h3 class="text-lg font-medium text-gray-300">Забаненные пользователи</h3>
+                        <p class="text-2xl font-bold text-red-400">{{ banned_users }}</p>
+                    </div>
+                    <div class="bg-gray-800 p-6 rounded-lg shadow hover:shadow-lg transition">
+                        <h3 class="text-lg font-medium text-gray-300">Активные конфигурации</h3>
+                        <p class="text-2xl font-bold text-green-400">{{ active_configs }}</p>
+                    </div>
+                    <div class="bg-gray-800 p-6 rounded-lg shadow hover:shadow-lg transition">
+                        <h3 class="text-lg font-medium text-gray-300">Всего конфигураций</h3>
+                        <p class="text-2xl font-bold text-purple-400">{{ total_configs }}</p>
+                    </div>
+                </div>
+                <h2 class="text-3xl font-semibold mb-6">Активность пользователей</h2>
+                <div class="bg-gray-800 p-6 rounded-lg shadow">
+                    <h3 class="text-xl font-medium mb-4">График активности (последние 24 часа)</h3>
+                    <pre class="font-mono text-sm bg-gray-900 p-4 rounded">{{ ascii_chart_day }}</pre>
+                    <div class="mt-4 flex space-x-4">
+                        <a href="/activity/day" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition">24 часа</a>
+                        <a href="/activity/week" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition">Неделя</a>
+                        <a href="/activity/month" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition">Месяц</a>
+                    </div>
+                </div>
             </div>
         </body>
         </html>
         """,
         active_users=active_users,
-        banned_users=banned_users
+        banned_users=banned_users,
+        active_configs=active_configs,
+        total_configs=total_configs,
+        ascii_chart_day=ascii_chart_day
     )
 
 # Flask маршрут для графика активности
-@app.route('/activity_plot')
-def activity_plot():
-    logger.info("Запрос к графику активности")
-    plot_buffer = generate_activity_plot()
-    if not plot_buffer:
-        return "No activity data available for the last 24 hours.", 404
-    return send_file(plot_buffer, mimetype='image/png')
+@app.route('/activity/<range_type>')
+def activity_plot(range_type):
+    logger.info(f"Запрос к графику активности ({range_type})")
+    if range_type not in ["day", "week", "month"]:
+        return "Недопустимый диапазон времени.", 400
+    ascii_chart = generate_ascii_chart(range_type)
+    active_users, banned_users, active_configs, total_configs = get_stats()
+    return render_template_string(
+        """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+            <meta charset="UTF-8">
+            <meta name="viewport" content="width=device-width, initial-scale=1.0">
+            <title>WARP Bot Activity</title>
+            <script src="https://cdn.tailwindcss.com"></script>
+        </head>
+        <body class="bg-gray-900 text-gray-100">
+            <nav class="bg-gray-800 p-4 shadow">
+                <div class="container mx-auto flex justify-between items-center">
+                    <h1 class="text-2xl font-bold">WARP Bot Dashboard</h1>
+                    <div>
+                        <a href="/" class="text-gray-300 hover:text-white px-3 py-2 rounded">Главная</a>
+                        <a href="/activity/day" class="text-gray-300 hover:text-white px-3 py-2 rounded">24 часа</a>
+                        <a href="/activity/week" class="text-gray-300 hover:text-white px-3 py-2 rounded">Неделя</a>
+                        <a href="/activity/month" class="text-gray-300 hover:text-white px-3 py-2 rounded">Месяц</a>
+                    </div>
+                </div>
+            </nav>
+            <div class="container mx-auto p-6">
+                <h2 class="text-3xl font-semibold mb-6">Активность пользователей ({{ range_type }})</h2>
+                <div class="bg-gray-800 p-6 rounded-lg shadow">
+                    <pre class="font-mono text-sm bg-gray-900 p-4 rounded">{{ ascii_chart }}</pre>
+                    <div class="mt-4 flex space-x-4">
+                        <a href="/activity/day" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition">24 часа</a>
+                        <a href="/activity/week" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition">Неделя</a>
+                        <a href="/activity/month" class="bg-blue-600 text-white px-4 py-2 rounded hover:bg-blue-700 transition">Месяц</a>
+                    </div>
+                </div>
+            </div>
+        </body>
+        </html>
+        """,
+        range_type=range_type,
+        ascii_chart=ascii_chart
+    )
 
 # Создание клавиатуры с кнопками
 def get_main_keyboard(is_admin_user=False):
@@ -294,22 +305,42 @@ def get_main_keyboard(is_admin_user=False):
         ]
     ]
     if is_admin_user:
-        keyboard.append([InlineKeyboardButton("Активность по часам", callback_data="hourly_activity")])
+        keyboard.append([
+            InlineKeyboardButton("Статистика", callback_data="stats"),
+            InlineKeyboardButton("Пользователи", callback_data="users"),
+        ])
+        keyboard.append([
+            InlineKeyboardButton("Активность (24ч)", callback_data="activity_day"),
+            InlineKeyboardButton("Активность (неделя)", callback_data="activity_week"),
+        ])
+        keyboard.append([
+            InlineKeyboardButton("Активность (месяц)", callback_data="activity_month"),
+        ])
     return InlineKeyboardMarkup(keyboard)
 
 # Обработчик команды /start
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    register_user(user.id, user.username)
-
+    conn = sqlite3.connect("warp_bot.db")
+    c = conn.cursor()
+    
+    # Регистрация пользователя
+    c.execute(
+        "INSERT OR REPLACE INTO users (telegram_id, username, first_name, last_name, first_seen, last_config_time, is_banned) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (user.id, user.username, user.first_name, user.last_name, datetime.now(), None, 0)
+    )
+    conn.commit()
+    conn.close()
+    
     is_admin_user = is_admin(user.id)
     reply_markup = get_main_keyboard(is_admin_user)
-    welcome_message = (
-        f"Привет, {user.first_name or 'пользователь'}! 👋\n"
+    await update.message.reply_text(
+        f"Добро пожаловать, {user.first_name or 'пользователь'}! 👋\n"
         f"Ваш Telegram ID: {user.id}\n"
-        "Я бот для управления конфигурациями WARP. Выбери действие:"
+        "Я бот для управления WARP конфигурациями. Выберите действие:",
+        reply_markup=reply_markup
     )
-    await update.message.reply_text(welcome_message, reply_markup=reply_markup)
 
 # Обработчик кнопок
 async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -317,33 +348,14 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = query.from_user
     is_admin_user = is_admin(user.id)
     reply_markup = get_main_keyboard(is_admin_user)
-
+    
     await query.answer()
-
+    
     if query.data == "get_config":
-        config_path = generate_warp_config(user.id)
-        if not config_path or not os.path.exists(config_path):
-            await query.message.reply_text(
-                "Ошибка при генерации конфигурации.", reply_markup=reply_markup
-            )
-            return
-        try:
-            with open(config_path, 'rb') as config_file:
-                await query.message.reply_document(
-                    document=config_file,
-                    filename=f"warp_config_{user.id}.conf",
-                    caption="Ваша конфигурация WARP",
-                    reply_markup=reply_markup
-                )
-            os.remove(config_path)
-        except Exception as e:
-            logger.error(f"Ошибка отправки конфигурации: {e}")
-            await query.message.reply_text(
-                "Ошибка при отправке конфигурации.", reply_markup=reply_markup
-            )
+        await get_config(update, context)
     elif query.data == "help":
         help_text = (
-            "Я бот для управления WARP. Доступные команды:\n"
+            "Я бот для управления WARP конфигурациями. Доступные команды:\n"
             "/start - Начать работу\n"
             "/getconfig - Получить конфигурацию WARP (.conf файл)\n"
             "Для админов:\n"
@@ -352,161 +364,204 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "/ban <user_id> - Забанить\n"
             "/unban <user_id> - Разбанить\n"
             "/broadcast <сообщение> - Рассылка\n"
-            "/hourly_activity - График активности по часам\n"
+            "/hourly_activity - График активности\n"
+            "Используйте кнопки для удобства!"
         )
         await query.message.reply_text(help_text, reply_markup=reply_markup)
-    elif query.data == "hourly_activity" and is_admin_user:
-        plot_buffer = generate_activity_plot()
-        if not plot_buffer:
-            await query.message.reply_text(
-                "Не удалось создать график. Нет данных за последние 24 часа.",
-                reply_markup=reply_markup,
-            )
-            return
-        try:
-            await query.message.reply_photo(photo=plot_buffer, reply_markup=reply_markup)
-        except Exception as e:
-            logger.error(f"Ошибка отправки графика: {e}")
-            await query.message.reply_text("Ошибка при отправке графика.", reply_markup=reply_markup)
+    elif query.data == "stats" and is_admin_user:
+        await stats(update, context)
+    elif query.data == "users" and is_admin_user:
+        await users(update, context)
+    elif query.data in ["activity_day", "activity_week", "activity_month"] and is_admin_user:
+        range_type = {"activity_day": "day", "activity_week": "week", "activity_month": "month"}[query.data]
+        ascii_chart = generate_ascii_chart(range_type)
+        await query.message.reply_text(
+            f"Активность пользователей ({range_type}):\n```\n{ascii_chart}\n```",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
 
 # Обработчик команды /getconfig
 async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    is_admin_user = is_admin(user.id)
-    reply_markup = get_main_keyboard(is_admin_user)
-
-    config_path = generate_warp_config(user.id)
-    if not config_path or not os.path.exists(config_path):
-        await update.message.reply_text(
-            "Ошибка при генерации конфигурации.", reply_markup=reply_markup
-        )
+    conn = sqlite3.connect("warp_bot.db")
+    c = conn.cursor()
+    
+    # Проверка на бан
+    c.execute("SELECT is_banned FROM users WHERE telegram_id = ?", (user.id,))
+    result = c.fetchone()
+    if result and result[0] == 1:
+        await update.message.reply_text("Вы забанены и не можете получать конфигурации.", reply_markup=get_main_keyboard())
+        conn.close()
         return
-    try:
-        with open(config_path, 'rb') as config_file:
-            await update.message.reply_document(
-                document=config_file,
-                filename=f"warp_config_{user.id}.conf",
-                caption="Ваша конфигурация WARP",
-                reply_markup=reply_markup
+    
+    # Проверка времени последнего запроса (лимит 1 конфиг в 24 часа)
+    c.execute("SELECT last_config_time FROM users WHERE telegram_id = ?", (user.id,))
+    last_config_time = c.fetchone()[0]
+    if last_config_time:
+        last_time = datetime.fromisoformat(last_config_time)
+        if datetime.now() - last_time < timedelta(hours=24):
+            await update.message.reply_text(
+                "Вы можете запрашивать новую конфигурацию раз в 24 часа. Попробуйте позже.",
+                reply_markup=get_main_keyboard()
             )
-        os.remove(config_path)
-    except Exception as e:
-        logger.error(f"Ошибка отправки конфигурации: {e}")
-        await update.message.reply_text(
-            "Ошибка при отправке конфигурации.", reply_markup=reply_markup
-        )
+            conn.close()
+            return
+    
+    # Генерация и сохранение конфигурации
+    config = generate_warp_config()
+    config_id = str(uuid.uuid4())
+    c.execute(
+        "INSERT INTO configs (config_id, telegram_id, created_at, is_active) VALUES (?, ?, ?, ?)",
+        (config_id, user.id, datetime.now(), 1)
+    )
+    c.execute(
+        "UPDATE users SET last_config_time = ? WHERE telegram_id = ?",
+        (datetime.now().isoformat(), user.id)
+    )
+    conn.commit()
+    conn.close()
+    
+    # Отправка конфигурации
+    config_path = f"/tmp/config_{user.id}.conf"
+    with open(config_path, "w") as f:
+        f.write(config)
+    try:
+        with open(config_path, "rb") as f:
+            await update.message.reply_document(
+                document=f,
+                filename="warp.conf",
+                caption="Ваша WARP конфигурация",
+                reply_markup=get_main_keyboard(is_admin(user.id))
+            )
+    finally:
+        if os.path.exists(config_path):
+            os.remove(config_path)
 
 # Обработчик команды /stats
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
-
-    active_users, banned_users = get_stats()
-    reply_markup = get_main_keyboard(is_admin=True)
-    await update.message.reply_text(
-        f"Статистика:\nАктивных пользователей: {active_users}\nЗабаненных пользователей: {banned_users}",
-        reply_markup=reply_markup,
+    
+    active_users, banned_users, active_configs, total_configs = get_stats()
+    stats_message = (
+        f"📊 Статистика бота:\n"
+        f"Активных пользователей: {active_users}\n"
+        f"Забаненных пользователей: {banned_users}\n"
+        f"Активных конфигураций: {active_configs}\n"
+        f"Всего выдано конфигураций: {total_configs}"
     )
+    await update.message.reply_text(stats_message, reply_markup=get_main_keyboard(is_admin=True))
 
 # Обработчик команды /users
 async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
-
-    user_list = get_users()
-    if not user_list:
-        await update.message.reply_text("Пользователи не найдены.", reply_markup=get_main_keyboard(is_admin=True))
-        return
-
-    response = "Список пользователей:\n"
-    for user in user_list:
-        status = "Забанен" if user[2] else "Активен"
-        response += f"ID: {user[0]}, Username: {user[1] or 'N/A'}, Статус: {status}\n"
-    await update.message.reply_text(response, reply_markup=get_main_keyboard(is_admin=True))
+    
+    conn = sqlite3.connect("warp_bot.db")
+    c = conn.cursor()
+    c.execute("SELECT telegram_id, username, first_name, last_name, is_banned FROM users")
+    users = c.fetchall()
+    conn.close()
+    
+    users_message = "👥 Список пользователей:\n\n"
+    for user in users:
+        status = "🚫 Забанен" if user[4] == 1 else "✅ Активен"
+        users_message += (
+            f"ID: {user[0]}\n"
+            f"Username: {user[1] or 'N/A'}\n"
+            f"Имя: {user[2]} {user[3] or ''}\n"
+            f"Статус: {status}\n\n"
+        )
+    
+    await update.message.reply_text(users_message, reply_markup=get_main_keyboard(is_admin=True))
 
 # Обработчик команды /ban
 async def ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
-
+    
+    if not context.args:
+        await update.message.reply_text("Укажите Telegram ID: /ban <telegram_id>")
+        return
+    
     try:
-        user_id = int(context.args[0])
-        set_ban_status(user_id, 1)
-        await update.message.reply_text(
-            f"Пользователь ID {user_id} забанен.",
-            reply_markup=get_main_keyboard(is_admin=True),
-        )
+        target_id = int(context.args[0])
+        conn = sqlite3.connect("warp_bot.db")
+        c = conn.cursor()
+        c.execute("UPDATE users SET is_banned = 1 WHERE telegram_id = ?", (target_id,))
+        conn.commit()
+        conn.close()
+        await update.message.reply_text(f"Пользователь {target_id} забанен.", reply_markup=get_main_keyboard(is_admin=True))
         try:
             await context.bot.send_message(
-                chat_id=user_id,
-                text="Вы были забанены администратором.",
+                chat_id=target_id,
+                text="Вы были забанены администратором."
             )
         except Exception as e:
-            logger.warning(f"Не удалось уведомить пользователя ID {user_id}: {e}")
-    except (IndexError, ValueError):
-        await update.message.reply_text(
-            "Использование: /ban <user_id>",
-            reply_markup=get_main_keyboard(is_admin=True),
-        )
+            logger.warning(f"Не удалось уведомить пользователя ID {target_id}: {e}")
+    except ValueError:
+        await update.message.reply_text("Неверный формат Telegram ID.", reply_markup=get_main_keyboard(is_admin=True))
 
 # Обработчик команды /unban
 async def unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
-
+    
+    if not context.args:
+        await update.message.reply_text("Укажите Telegram ID: /unban <telegram_id>")
+        return
+    
     try:
-        user_id = int(context.args[0])
-        set_ban_status(user_id, 0)
-        await update.message.reply_text(
-            f"Пользователь ID {user_id} разбанен.",
-            reply_markup=get_main_keyboard(is_admin=True),
-        )
+        target_id = int(context.args[0])
+        conn = sqlite3.connect("warp_bot.db")
+        c = conn.cursor()
+        c.execute("UPDATE users SET is_banned = 0 WHERE telegram_id = ?", (target_id,))
+        conn.commit()
+        conn.close()
+        await update.message.reply_text(f"Пользователь {target_id} разбанен.", reply_markup=get_main_keyboard(is_admin=True))
         try:
             await context.bot.send_message(
-                chat_id=user_id,
-                text="Вы были разбанены администратором.",
+                chat_id=target_id,
+                text="Вы были разбанены администратором."
             )
         except Exception as e:
-            logger.warning(f"Не удалось уведомить пользователя ID {user_id}: {e}")
-    except (IndexError, ValueError):
-        await update.message.reply_text(
-            "Использование: /unban <user_id>",
-            reply_markup=get_main_keyboard(is_admin=True),
-        )
+            logger.warning(f"Не удалось уведомить пользователя ID {target_id}: {e}")
+    except ValueError:
+        await update.message.reply_text("Неверный формат Telegram ID.", reply_markup=get_main_keyboard(is_admin=True))
 
 # Обработчик команды /broadcast
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
-
+    
     if not context.args:
-        await update.message.reply_text(
-            "Использование: /broadcast <сообщение>",
-            reply_markup=get_main_keyboard(is_admin=True),
-        )
+        await update.message.reply_text("Укажите сообщение: /broadcast <сообщение>")
         return
-
+    
     message = " ".join(context.args)
-    user_list = get_users()
+    conn = sqlite3.connect("warp_bot.db")
+    c = conn.cursor()
+    c.execute("SELECT telegram_id FROM users WHERE is_banned = 0")
+    users = c.fetchall()
+    conn.close()
+    
     success_count = 0
-    for user in user_list:
-        if not user[2]:  # Пропускаем забаненных
-            try:
-                await context.bot.send_message(
-                    chat_id=user[0],
-                    text=message,
-                )
-                success_count += 1
-            except Exception as e:
-                logger.warning(f"Не удалось отправить сообщение пользователю ID {user[0]}: {e}")
+    for user in users:
+        try:
+            await context.bot.send_message(chat_id=user[0], text=message)
+            success_count += 1
+        except Exception as e:
+            logger.warning(f"Не удалось отправить сообщение пользователю ID {user[0]}: {e}")
+    
     await update.message.reply_text(
         f"Рассылка завершена. Сообщение отправлено {success_count} пользователям.",
-        reply_markup=get_main_keyboard(is_admin=True),
+        reply_markup=get_main_keyboard(is_admin=True)
     )
 
 # Обработчик команды /hourly_activity
@@ -514,31 +569,31 @@ async def hourly_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         await update.message.reply_text("Эта команда доступна только администратору.")
         return
-
-    plot_buffer = generate_activity_plot()
+    
+    ascii_chart = generate_ascii_chart("day")
     reply_markup = get_main_keyboard(is_admin=True)
-    if not plot_buffer:
-        await update.message.reply_text(
-            "Не удалось создать график. Нет данных за последние 24 часа.",
-            reply_markup=reply_markup,
-        )
-        return
+    await update.message.reply_text(
+        f"Активность пользователей (24 часа):\n```\n{ascii_chart}\n```",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
 
-    try:
-        await update.message.reply_photo(photo=plot_buffer, reply_markup=reply_markup)
-    except Exception as e:
-        logger.error(f"Ошибка отправки графика: {e}")
-        await update.message.reply_text("Ошибка при отправке графика.", reply_markup=reply_markup)
+# Обработчик ошибок
+async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Update {update} caused error {context.error}")
 
 # Запуск Telegram-бота
 async def run_bot():
     logger.info("Попытка запуска Telegram-бота...")
     try:
+        logger.info("Инициализация базы данных...")
         init_db()
+        logger.info("Создание Application builder...")
         application = Application.builder().token(BOT_TOKEN).build()
         logger.info("Application builder создан успешно.")
 
         # Явно отключаем webhook
+        logger.info("Отключение webhook...")
         try:
             await application.bot.delete_webhook(drop_pending_updates=True)
             logger.info("Webhook успешно отключен.")
@@ -546,6 +601,7 @@ async def run_bot():
             logger.error(f"Ошибка при отключении webhook: {e}")
 
         # Регистрация обработчиков
+        logger.info("Регистрация обработчиков команд...")
         application.add_handler(CommandHandler("start", start))
         application.add_handler(CallbackQueryHandler(button))
         application.add_handler(CommandHandler("getconfig", get_config))
@@ -555,6 +611,7 @@ async def run_bot():
         application.add_handler(CommandHandler("unban", unban))
         application.add_handler(CommandHandler("broadcast", broadcast))
         application.add_handler(CommandHandler("hourly_activity", hourly_activity))
+        application.add_error_handler(error_handler)
         logger.info("Обработчики команд зарегистрированы.")
 
         # Запуск бота с обработкой конфликтов
@@ -562,9 +619,12 @@ async def run_bot():
         retry_delay = 5
         for attempt in range(max_retries):
             try:
+                logger.info(f"Инициализация приложения (попытка {attempt + 1}/{max_retries})...")
                 await application.initialize()
+                logger.info("Запуск приложения...")
                 await application.start()
                 logger.info("Бот успешно запущен.")
+                logger.info("Запуск polling...")
                 await application.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,
                     drop_pending_updates=True
