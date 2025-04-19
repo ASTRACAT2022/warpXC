@@ -155,20 +155,25 @@ class Database:
 db = Database()
 
 def generate_warp_config():
-    private_key = f"CS/UQwV5cCjhGdH/1FQbSkRLvYU8Ha1xeTkHVg5rizI={uuid.uuid4().hex[:8]}"
-    public_key = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
-    
-    config = f"""[Interface]
-PrivateKey = {private_key}
-Address = 172.16.0.2/32, 2606:4700:110:8a82:ae4c:ce7e:e5a6:a7fd/128
-DNS = 1.1.1.1, 1.0.0.1, 2606:4700:4700::1111, 2606:4700:4700::1001
+    config = """[Interface]
+PrivateKey = CS/UQwV5cCjhGdH/1FQbSkRLvYU8Ha1xeTkHVg5rizI=
+S1 = 0
+S2 = 0
+Jc = 120
+Jmin = 23
+Jmax = 911
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
 MTU = 1280
+Address = 172.16.0.2, 2606:4700:110:8a82:ae4c:ce7e:e5a6:a7fd
+DNS = 1.1.1.1, 2606:4700:4700::1111, 1.0.0.1, 2606:4700:4700::1001
 
 [Peer]
-PublicKey = {public_key}
+PublicKey = bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo=
 AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = 162.159.192.227:894
-PersistentKeepalive = 25
 """
     return config
 
@@ -446,7 +451,7 @@ async def get_config(query: Update, context: ContextTypes.DEFAULT_TYPE):
     db.add_config(user.id)
     
     config_file = f"warp_{user.id}.conf"
-    with open(config_file, "w") as f:
+    with open(config_file, "w", encoding='utf-8') as f:
         f.write(config)
     
     with open(config_file, "rb") as f:
@@ -457,7 +462,6 @@ async def get_config(query: Update, context: ContextTypes.DEFAULT_TYPE):
             caption="Ваша WARP конфигурация"
         )
     
-    import os
     os.remove(config_file)
     
     logger.info(f"Пользователь {user.id} получил конфигурацию")
