@@ -11,6 +11,10 @@ from telegram.ext import (
     MessageHandler,
     filters
 )
+from flask import Flask, render_template, request, redirect, url_for, flash, session
+from werkzeug.security import generate_password_hash, check_password_hash
+import threading
+import asyncio
 
 # Настройка логирования
 logging.basicConfig(
@@ -23,7 +27,15 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = "7935425343:AAECbjFJvLHkeTvwHAKDG8uvmy-KiWcPtns"
 ADMIN_TELEGRAM_ID = 650154766  # Ваш ID в Telegram
 DB_FILE = "warp_bot.db"
+WEB_SECRET_KEY = "your-secret-key"  # Секретный ключ для Flask
+ADMIN_USERNAME = "admin"  # Имя пользователя для входа в веб-интерфейс
+ADMIN_PASSWORD_HASH = generate_password_hash("your-secure-password")  # Пароль (замените на свой)
 
+# Инициализация Flask
+app = Flask(__name__)
+app.secret_key = WEB_SECRET_KEY
+
+# Класс базы данных
 class Database:
     def __init__(self):
         self.conn = sqlite3.connect(DB_FILE, check_same_thread=False)
@@ -32,7 +44,6 @@ class Database:
     def create_tables(self):
         cursor = self.conn.cursor()
         
-        # Таблица пользователей
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             telegram_id INTEGER PRIMARY KEY,
@@ -45,7 +56,6 @@ class Database:
         )
         ''')
         
-        # Таблица конфигураций
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS configs (
             config_id TEXT PRIMARY KEY,
@@ -184,6 +194,180 @@ def get_main_keyboard(user_id):
     
     return InlineKeyboardMarkup(keyboard)
 
+# Flask routes
+@app.route('/')
+def index():
+    if 'logged_in' not in session:
+        return redirect(url_for('login'))
+    
+    active_users, banned_users, active_configs, total_configs = db.get_stats()
+    return render_template('index.html', stats={
+        'active_users': active_users,
+        'banned_users': banned_users,
+        'active_configs': active_configs,
+        'total_configs': total_configs
+    })
+
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        
+        if username == ADMIN_USERNAME and check_password_hash(ADMIN_PASSWORD_HASH, password):
+            session['logged_in'] = True
+            flash('Успешный вход!', 'success')
+            return redirect(url_for('index'))
+        else:
+            flash('Неверное имя пользователя или пароль.', 'danger')
+    
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    flash('Вы вышли из системы.', 'info')
+    return redirect(url_for('login'))
+
+@app.route('/users')
+def users():
+    if 'logged_in' not in session:
+        return redirect(url_for('login'))
+    
+    users = db.get_users_list()
+    return render_template('users.html', users=users)
+
+@app.route('/ban/<int:user_id>')
+def ban_user(user_id):
+    if 'logged_in' not in session:
+        return redirect(url_for('login'))
+    
+    db.ban_user(user_id)
+    flash(f'Пользователь {user_id} забанен.', 'success')
+    return redirect(url_for('users'))
+
+@app.route('/unban/<int:user_id>')
+def unban_user(user_id):
+    if 'logged_in' not in session:
+        return redirect(url_for('login'))
+    
+    db.unban_user(user_id)
+    flash(f'Пользователь {user_id} разбанен.', 'success')
+    return redirect(url_for('users'))
+
+# HTML Templates
+TEMPLATES = {
+    'index.html': '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>WARP Bot Dashboard</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    </head>
+    <body>
+        <div class="container mt-5">
+            <h1>WARP Bot Dashboard</h1>
+            <a href="{{ url_for('logout') }}" class="btn btn-secondary mb-3">Выйти</a>
+            <a href="{{ url_for('users') }}" class="btn btn-primary mb-3">Пользователи</a>
+            {% for message in get_flashed_messages(with_categories=true) %}
+                <div class="alert alert-{{ message[0] }}">{{ message[1] }}</div>
+            {% endfor %}
+            <h3>Статистика</h3>
+            <ul class="list-group">
+                <li class="list-group-item">Активные пользователи: {{ stats.active_users }}</li>
+                <li class="list-group-item">Забаненные пользователи: {{ stats.banned_users }}</li>
+                <li class="list-group-item">Активные конфигурации: {{ stats.active_configs }}</li>
+                <li class="list-group-item">Всего конфигураций: {{ stats.total_configs }}</li>
+            </ul>
+        </div>
+    </body>
+    </html>
+    ''',
+    'login.html': '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Login - WARP Bot</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    </head>
+    <body>
+        <div class="container mt-5">
+            <h1>Вход в WARP Bot Dashboard</h1>
+            {% for message in get_flashed_messages(with_categories=true) %}
+                <div class="alert alert-{{ message[0] }}">{{ message[1] }}</div>
+            {% endfor %}
+            <form method="POST">
+                <div class="mb-3">
+                    <label for="username" class="form-label">Имя пользователя</label>
+                    <input type="text" class="form-control" id="username" name="username" required>
+                </div>
+                <div class="mb-3">
+                    <label for="password" class="form-label">Пароль</label>
+                    <input type="password" class="form-control" id="password" name="password" required>
+                </div>
+                <button type="submit" class="btn btn-primary">Войти</button>
+            </form>
+        </div>
+    </body>
+    </html>
+    ''',
+    'users.html': '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Users - WARP Bot</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    </head>
+    <body>
+        <div class="container mt-5">
+            <h1>Пользователи</h1>
+            <a href="{{ url_for('index') }}" class="btn btn-secondary mb-3">Назад</a>
+            <a href="{{ url_for('logout') }}" class="btn btn-secondary mb-3">Выйти</a>
+            {% for message in get_flashed_messages(with_categories=true) %}
+                <div class="alert alert-{{ message[0] }}">{{ message[1] }}</div>
+            {% endfor %}
+            <table class="table table-striped">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Username</th>
+                        <th>Имя</th>
+                        <th>Статус</th>
+                        <th>Действия</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for user in users %}
+                    <tr>
+                        <td>{{ user[0] }}</td>
+                        <td>{{ user[1] or 'N/A' }}</td>
+                        <td>{{ user[2] or 'N/A' }}</td>
+                        <td>{{ 'Забанен' if user[3] else 'Активен' }}</td>
+                        <td>
+                            {% if user[3] %}
+                            <a href="{{ url_for('unban_user', user_id=user[0]) }}" class="btn btn-success btn-sm">Разбанить</a>
+                            {% else %}
+                            <a href="{{ url_for('ban_user', user_id=user[0]) }}" class="btn btn-danger btn-sm">Забанить</a>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </body>
+    </html>
+    '''
+}
+
+# Создание шаблонов
+import os
+os.makedirs('templates', exist_ok=True)
+for filename, content in TEMPLATES.items():
+    with open(os.path.join('templates', filename), 'w', encoding='utf-8') as f:
+        f.write(content)
+
+# Telegram Bot Handlers
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     logger.info(f"Новый пользователь: {user.id}")
@@ -204,16 +388,17 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     data = query.data
     
     if data == "get_config":
-        await get_config(update, context)
+        await get_config(query, context)
     elif data == "help":
-        await help_command(update, context)
+        await help_command(query, context)
     elif data == "stats" and is_admin(user.id):
-        await stats_command(update, context)
+        await stats_command(query, context)
     elif data == "users" and is_admin(user.id):
-        await users_command(update, context)
+        await users_command(query, context)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+    query = update.callback_query
+    user = query.from_user
     
     help_text = (
         "📚 Справка по боту:\n\n"
@@ -239,15 +424,15 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=get_main_keyboard(user.id)
     )
 
-async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
+async def get_config(query: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = query.from_user
     
     if db.is_banned(user.id):
-        await update.message.reply_text("❌ Вы забанены и не можете получать конфигурации.")
+        await query.message.reply_text("❌ Вы забанены и не можете получать конфигурации.")
         return
     
     if not db.can_get_config(user.id):
-        await update.message.reply_text(
+        await query.message.reply_text(
             "⏳ Вы можете запрашивать конфигурацию только раз в 24 часа. "
             "Попробуйте позже."
         )
@@ -256,12 +441,10 @@ async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
     config = generate_warp_config()
     db.add_config(user.id)
     
-    # Сохраняем конфиг во временный файл
     config_file = f"warp_{user.id}.conf"
     with open(config_file, "w") as f:
         f.write(config)
     
-    # Отправляем файл пользователю
     with open(config_file, "rb") as f:
         await context.bot.send_document(
             chat_id=user.id,
@@ -270,15 +453,14 @@ async def get_config(update: Update, context: ContextTypes.DEFAULT_TYPE):
             caption="Ваша WARP конфигурация"
         )
     
-    # Удаляем временный файл
     import os
     os.remove(config_file)
     
     logger.info(f"Пользователь {user.id} получил конфигурацию")
 
-async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Эта команда только для администратора.")
+async def stats_command(query: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(query.from_user.id):
+        await query.message.reply_text("❌ Эта команда только для администратора.")
         return
     
     active_users, banned_users, active_configs, total_configs = db.get_stats()
@@ -289,17 +471,17 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📂 Конфигурации: {active_configs} активных, {total_configs} всего"
     )
     
-    await update.message.reply_text(response)
+    await query.message.reply_text(response)
 
-async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        await update.message.reply_text("❌ Эта команда только для администратора.")
+async def users_command(query: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(query.from_user.id):
+        await query.message.reply_text("❌ Эта команда только для администратора.")
         return
     
     users = db.get_users_list()
     
     if not users:
-        await update.message.reply_text("Нет пользователей в базе данных.")
+        await query.message.reply_text("Нет пользователей в базе данных.")
         return
     
     response = "👥 Последние 50 пользователей:\n\n"
@@ -307,7 +489,7 @@ async def users_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         status = "🚫" if user[3] else "✅"
         response += f"{status} ID: {user[0]}, Username: @{user[1]}, Имя: {user[2]}\n"
     
-    await update.message.reply_text(response)
+    await query.message.reply_text(response)
 
 async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
@@ -324,7 +506,6 @@ async def ban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(f"Пользователь {user_id} забанен.")
         
-        # Пытаемся уведомить пользователя
         try:
             await context.bot.send_message(
                 chat_id=user_id,
@@ -351,7 +532,6 @@ async def unban_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         await update.message.reply_text(f"Пользователь {user_id} разбанен.")
         
-        # Пытаемся уведомить пользователя
         try:
             await context.bot.send_message(
                 chat_id=user_id,
@@ -395,7 +575,6 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failed += 1
             logger.warning(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
         
-        # Обновляем статус каждые 10 отправок
         if (success + failed) % 10 == 0:
             await progress_msg.edit_text(
                 f"Рассылка в процессе...\n"
@@ -403,7 +582,6 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"❌ Не удалось: {failed}"
             )
         
-        # Небольшая задержка, чтобы не превысить лимиты Telegram
         await asyncio.sleep(0.1)
     
     await progress_msg.edit_text(
@@ -427,28 +605,34 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
+# Запуск Flask в отдельном потоке
+def run_flask():
+    app.run(host='0.0.0.0', port=5000, debug=False)
+
+# Основная функция
 def main():
+    # Запуск Flask в отдельном потоке
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+    
+    # Запуск Telegram-бота
     application = Application.builder().token(BOT_TOKEN).build()
     
-    # Регистрация обработчиков
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("getconfig", get_config))
     
-    # Админ-команды
     application.add_handler(CommandHandler("stats", stats_command))
     application.add_handler(CommandHandler("users", users_command))
     application.add_handler(CommandHandler("ban", ban_command))
     application.add_handler(CommandHandler("unban", unban_command))
     application.add_handler(CommandHandler("broadcast", broadcast_command))
     
-    # Обработчики кнопок
     application.add_handler(CallbackQueryHandler(button_handler))
     
-    # Обработчик ошибок
     application.add_error_handler(error_handler)
     
-    # Запуск бота
     application.run_polling()
 
 if __name__ == "__main__":
