@@ -2,7 +2,6 @@ import sqlite3
 import os
 import logging
 import asyncio
-import threading
 import uuid
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,8 +16,9 @@ from telegram.ext import (
 from telegram.error import Conflict, NetworkError, TelegramError
 from datetime import datetime, timedelta
 import pandas as pd
-from flask import Flask, render_template_string
+from flask import Flask, render_template_string, request
 from asciichartpy import plot
+import aiohttp
 
 # Настройка логирования
 logging.basicConfig(
@@ -32,10 +32,11 @@ load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_TELEGRAM_ID = os.getenv("ADMIN_TELEGRAM_ID")
 PORT = os.getenv("PORT", "5000")
+RENDER_EXTERNAL_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "warpxc.onrender.com")
 
 logger.info(f"Загруженные переменные: BOT_TOKEN={'***' if BOT_TOKEN else 'не задан'}, "
             f"ADMIN_TELEGRAM_ID={ADMIN_TELEGRAM_ID or 'не задан'}, "
-            f"PORT={PORT}")
+            f"PORT={PORT}, RENDER_EXTERNAL_HOSTNAME={RENDER_EXTERNAL_HOSTNAME}")
 
 if not BOT_TOKEN:
     logger.error("Переменная окружения BOT_TOKEN не задана.")
@@ -52,6 +53,23 @@ except ValueError:
 
 # Инициализация Flask
 app = Flask(__name__)
+application = None  # Глобальная переменная для Telegram Application
+
+# Проверка связи с Telegram API
+async def check_telegram_api():
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getMe") as response:
+                data = await response.json()
+                if data.get("ok"):
+                    logger.info("Связь с Telegram API активна.")
+                    return True, "🟢 Активна"
+                else:
+                    logger.warning(f"Ошибка Telegram API: {data}")
+                    return False, f"🔴 Отсутствует ({data.get('description', 'Неизвестная ошибка')})"
+    except Exception as e:
+        logger.error(f"Ошибка проверки Telegram API: {e}")
+        return False, f"🔴 Отсутствует ({str(e)})"
 
 # Инициализация базы данных
 def init_db():
@@ -178,10 +196,11 @@ def generate_ascii_chart(range_type):
 
 # Flask маршрут для главной страницы
 @app.route('/')
-def stats_page():
+async def stats_page():
     logger.info("Запрос к главной странице статистики")
     active_users, banned_users, active_configs, total_configs = get_stats()
     ascii_chart_day = generate_ascii_chart("day")
+    api_status_ok, api_status_message = await check_telegram_api()
     return render_template_string(
         """
         <!DOCTYPE html>
@@ -206,6 +225,14 @@ def stats_page():
             </nav>
             <div class="container mx-auto p-6">
                 <h2 class="text-3xl font-semibold mb-6">Статистика</h2>
+                <div class="bg-gray-800 p-4 rounded-lg mb-6">
+                    <p class="text-lg font-medium">
+                        Связь с Telegram API: 
+                        <span class="{% if api_status_ok %}text-green-400{% else %}text-red-400{% endif %}">
+                            {{ api_status_message }}
+                        </span>
+                    </p>
+                </div>
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
                     <div class="bg-gray-800 p-6 rounded-lg shadow hover:shadow-lg transition">
                         <h3 class="text-lg font-medium text-gray-300">Активные пользователи</h3>
@@ -242,17 +269,19 @@ def stats_page():
         banned_users=banned_users,
         active_configs=active_configs,
         total_configs=total_configs,
-        ascii_chart_day=ascii_chart_day
+        ascii_chart_day=ascii_chart_day,
+        api_status_ok=api_status_ok,
+        api_status_message=api_status_message
     )
 
 # Flask маршрут для графика активности
 @app.route('/activity/<range_type>')
-def activity_plot(range_type):
+async def activity_plot(range_type):
     logger.info(f"Запрос к графику активности ({range_type})")
     if range_type not in ["day", "week", "month"]:
         return "Недопустимый диапазон времени.", 400
     ascii_chart = generate_ascii_chart(range_type)
-    active_users, banned_users, active_configs, total_configs = get_stats()
+    api_status_ok, api_status_message = await check_telegram_api()
     return render_template_string(
         """
         <!DOCTYPE html>
@@ -277,6 +306,14 @@ def activity_plot(range_type):
             </nav>
             <div class="container mx-auto p-6">
                 <h2 class="text-3xl font-semibold mb-6">Активность пользователей ({{ range_type }})</h2>
+                <div class="bg-gray-800 p-4 rounded-lg mb-6">
+                    <p class="text-lg font-medium">
+                        Связь с Telegram API: 
+                        <span class="{% if api_status_ok %}text-green-400{% else %}text-red-400{% endif %}">
+                            {{ api_status_message }}
+                        </span>
+                    </p>
+                </div>
                 <div class="bg-gray-800 p-6 rounded-lg shadow">
                     <pre class="font-mono text-sm bg-gray-900 p-4 rounded">{{ ascii_chart }}</pre>
                     <div class="mt-4 flex space-x-4">
@@ -290,8 +327,21 @@ def activity_plot(range_type):
         </html>
         """,
         range_type=range_type,
-        ascii_chart=ascii_chart
+        ascii_chart=ascii_chart,
+        api_status_ok=api_status_ok,
+        api_status_message=api_status_message
     )
+
+# Flask маршрут для webhook
+@app.route('/webhook', methods=['POST'])
+async def webhook():
+    try:
+        update = Update.de_json(request.get_json(), application.bot)
+        await application.process_update(update)
+        return '', 200
+    except Exception as e:
+        logger.error(f"Ошибка обработки webhook: {e}")
+        return '', 500
 
 # Создание клавиатуры с кнопками
 def get_main_keyboard(is_admin_user=False):
@@ -582,95 +632,61 @@ async def hourly_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
 
-# Запуск Telegram-бота
-async def run_bot():
-    logger.info("Попытка запуска Telegram-бота...")
-    try:
-        logger.info("Инициализация базы данных...")
-        init_db()
-        logger.info("Создание Application builder...")
-        application = Application.builder().token(BOT_TOKEN).build()
-        logger.info("Application builder создан успешно.")
+# Установка webhook
+async def set_webhook():
+    global application
+    logger.info("Инициализация базы данных...")
+    init_db()
+    logger.info("Создание Application builder...")
+    application = Application.builder().token(BOT_TOKEN).build()
+    logger.info("Application builder создан успешно.")
 
-        # Явно отключаем webhook
-        logger.info("Отключение webhook...")
+    # Регистрация обработчиков
+    logger.info("Регистрация обработчиков команд...")
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CallbackQueryHandler(button))
+    application.add_handler(CommandHandler("getconfig", get_config))
+    application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("users", users))
+    application.add_handler(CommandHandler("ban", ban))
+    application.add_handler(CommandHandler("unban", unban))
+    application.add_handler(CommandHandler("broadcast", broadcast))
+    application.add_handler(CommandHandler("hourly_activity", hourly_activity))
+    application.add_error_handler(error_handler)
+    logger.info("Обработчики команд зарегистрированы.")
+
+    webhook_url = f"https://{RENDER_EXTERNAL_HOSTNAME}/webhook"
+    logger.info(f"Установка webhook: {webhook_url}")
+    max_retries = 3
+    retry_delay = 5
+    for attempt in range(max_retries):
         try:
             await application.bot.delete_webhook(drop_pending_updates=True)
-            logger.info("Webhook успешно отключен.")
+            await application.bot.set_webhook(webhook_url)
+            logger.info("Webhook успешно установлен.")
+            return
         except TelegramError as e:
-            logger.error(f"Ошибка при отключении webhook: {e}")
-
-        # Регистрация обработчиков
-        logger.info("Регистрация обработчиков команд...")
-        application.add_handler(CommandHandler("start", start))
-        application.add_handler(CallbackQueryHandler(button))
-        application.add_handler(CommandHandler("getconfig", get_config))
-        application.add_handler(CommandHandler("stats", stats))
-        application.add_handler(CommandHandler("users", users))
-        application.add_handler(CommandHandler("ban", ban))
-        application.add_handler(CommandHandler("unban", unban))
-        application.add_handler(CommandHandler("broadcast", broadcast))
-        application.add_handler(CommandHandler("hourly_activity", hourly_activity))
-        application.add_error_handler(error_handler)
-        logger.info("Обработчики команд зарегистрированы.")
-
-        # Запуск бота с обработкой конфликтов
-        max_retries = 3
-        retry_delay = 5
-        for attempt in range(max_retries):
-            try:
-                logger.info(f"Инициализация приложения (попытка {attempt + 1}/{max_retries})...")
-                await application.initialize()
-                logger.info("Запуск приложения...")
-                await application.start()
-                logger.info("Бот успешно запущен.")
-                logger.info("Запуск polling...")
-                await application.updater.start_polling(
-                    allowed_updates=Update.ALL_TYPES,
-                    drop_pending_updates=True
-                )
-                logger.info("Polling начат.")
-                await application.run_polling()
-                break
-            except Conflict as e:
-                logger.warning(f"Конфликт getUpdates (попытка {attempt + 1}/{max_retries}): {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2
-                else:
-                    logger.error("Не удалось устранить конфликт getUpdates. Завершение работы.")
-                    raise
-            except NetworkError as e:
-                logger.error(f"Сетевая ошибка при запуске бота: {e}")
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay)
-                    retry_delay *= 2
-                else:
-                    logger.error("Сетевая ошибка не устранена. Завершение работы.")
-                    raise
-            except TelegramError as e:
-                logger.error(f"Ошибка Telegram API: {e}")
+            logger.error(f"Ошибка установки webhook (попытка {attempt + 1}/{max_retries}): {e}")
+            if attempt < max_retries - 1:
+                await asyncio.sleep(retry_delay)
+                retry_delay *= 2
+            else:
                 raise
-            except Exception as e:
-                logger.error(f"Неизвестная ошибка при запуске бота: {e}")
-                raise
-    except Exception as e:
-        logger.error(f"Критическая ошибка в run_bot: {e}")
-        raise
+        except Exception as e:
+            logger.error(f"Неизвестная ошибка при установке webhook: {e}")
+            raise
 
 # Запуск Flask и Telegram-бота
 def main():
     logger.info("Запуск приложения...")
-    # Запускаем Telegram-бот в отдельном потоке
     try:
-        bot_thread = threading.Thread(target=lambda: asyncio.run(run_bot()))
-        bot_thread.daemon = True
-        bot_thread.start()
-        logger.info("Поток Telegram-бота запущен.")
+        asyncio.run(set_webhook())
+        logger.info("Webhook-режим активирован.")
     except Exception as e:
-        logger.error(f"Ошибка при запуске потока бота: {e}")
+        logger.error(f"Критическая ошибка при установке webhook: {e}")
+        raise
 
-    # Запускаем Flask (для локального тестирования, gunicorn используется на Render)
+    # Запускаем Flask (gunicorn используется на Render)
     app.run(host='0.0.0.0', port=int(PORT))
 
 if __name__ == "__main__":
