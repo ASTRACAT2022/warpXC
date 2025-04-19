@@ -5,3 +5,4 @@ matplotlib==3.8.2
 pandas==2.2.2
 Flask==3.0.3
 gunicorn==22.0.0
+asciichartpy==1.5.25
