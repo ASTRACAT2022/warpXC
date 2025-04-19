@@ -2,6 +2,7 @@ import sqlite3
 import os
 import logging
 import asyncio
+import threading
 import uuid
 from dotenv import load_dotenv
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -335,17 +336,6 @@ async def activity_plot(range_type):
         api_status_message=api_status_message
     )
 
-# Flask маршрут для webhook
-@app.route('/webhook', methods=['POST'])
-async def webhook():
-    try:
-        update = Update.de_json(request.get_json(), application.bot)
-        await application.process_update(update)
-        return '', 200
-    except Exception as e:
-        logger.error(f"Ошибка обработки webhook: {e}")
-        return '', 500
-
 # Создание клавиатуры с кнопками
 def get_main_keyboard(is_admin_user=False):
     keyboard = [
@@ -635,8 +625,8 @@ async def hourly_activity(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.error(f"Update {update} caused error {context.error}")
 
-# Установка webhook
-async def set_webhook():
+# Запуск Telegram-бота в режиме polling
+async def run_bot():
     global application
     logger.info("Инициализация базы данных...")
     init_db()
@@ -658,35 +648,27 @@ async def set_webhook():
     application.add_error_handler(error_handler)
     logger.info("Обработчики команд зарегистрированы.")
 
-    webhook_url = f"https://{RENDER_EXTERNAL_HOSTNAME}/webhook"
-    logger.info(f"Установка webhook: {webhook_url}")
-    max_retries = 3
-    retry_delay = 5
-    for attempt in range(max_retries):
-        try:
-            await application.bot.delete_webhook(drop_pending_updates=True)
-            await application.bot.set_webhook(webhook_url)
-            logger.info("Webhook успешно установлен.")
-            return
-        except TelegramError as e:
-            logger.error(f"Ошибка установки webhook (попытка {attempt + 1}/{max_retries}): {e}")
-            if attempt < max_retries - 1:
-                await asyncio.sleep(retry_delay)
-                retry_delay *= 2
-            else:
-                raise
-        except Exception as e:
-            logger.error(f"Неизвестная ошибка при установке webhook: {e}")
-            raise
+    logger.info("Запуск polling...")
+    try:
+        await application.bot.delete_webhook(drop_pending_updates=True)
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        logger.info("Polling успешно запущен.")
+    except Exception as e:
+        logger.error(f"Ошибка в polling: {e}")
+        raise
 
 # Запуск Flask и Telegram-бота
 def main():
     logger.info("Запуск приложения...")
     try:
-        asyncio.run(set_webhook())
-        logger.info("Webhook-режим активирован.")
+        bot_thread = threading.Thread(target=lambda: asyncio.run(run_bot()))
+        bot_thread.daemon = True
+        bot_thread.start()
+        logger.info("Поток Telegram-бота запущен в режиме polling.")
     except Exception as e:
-        logger.error(f"Критическая ошибка при установке webhook: {e}")
+        logger.error(f"Критическая ошибка при запуске бота: {e}")
         raise
 
     # Запускаем Flask (gunicorn используется на Render)
