@@ -31,9 +31,10 @@ WEB_SECRET_KEY = "your-secret-key"  # Секретный ключ для Flask
 ADMIN_USERNAME = "astracat"  # Имя пользователя для входа в веб-интерфейс
 ADMIN_PASSWORD_HASH = generate_password_hash("astracat")  # Пароль
 
-# Инициализация Flask
+# Инициализация Flask и Telegram Application
 app = Flask(__name__)
 app.secret_key = WEB_SECRET_KEY
+application = None  # Глобальная переменная для Telegram Application
 
 # Класс базы данных
 class Database:
@@ -260,6 +261,44 @@ def unban_user(user_id):
     flash(f'Пользователь {user_id} разбанен.', 'success')
     return redirect(url_for('users'))
 
+@app.route('/broadcast', methods=['GET', 'POST'])
+async def broadcast():
+    if 'logged_in' not in session:
+        return redirect(url_for('login'))
+    
+    if request.method == 'POST':
+        message = request.form.get('message')
+        if not message:
+            flash('Сообщение не может быть пустым.', 'danger')
+            return redirect(url_for('broadcast'))
+        
+        users = db.get_active_users()
+        if not users:
+            flash('Нет активных пользователей для рассылки.', 'warning')
+            return redirect(url_for('broadcast'))
+        
+        success = 0
+        failed = 0
+        
+        for user_id in users:
+            try:
+                await application.bot.send_message(
+                    chat_id=user_id,
+                    text=f"📢 Сообщение от администратора:\n\n{message}"
+                )
+                success += 1
+            except Exception as e:
+                failed += 1
+                logger警告(f"Не удалось отправить сообщение пользователю {user_id}: {e}")
+            
+            # Небольшая задержка, чтобы не превысить лимиты Telegram
+            await asyncio.sleep(0.1)
+        
+        flash(f"Рассылка завершена: ✅ Успешно: {success}, ❌ Не удалось: {failed}", 'success')
+        return redirect(url_for('broadcast'))
+    
+    return render_template('broadcast.html')
+
 # HTML Templates
 TEMPLATES = {
     'index.html': '''
@@ -283,6 +322,7 @@ TEMPLATES = {
             <h1>WARP Bot Dashboard</h1>
             <a href="{{ url_for('logout') }}" class="btn btn-secondary mb-3">Выйти</a>
             <a href="{{ url_for('users') }}" class="btn btn-primary mb-3">Пользователи</a>
+            <a href="{{ url_for('broadcast') }}" class="btn btn-info mb-3">Рассылка</a>
             {% for message in get_flashed_messages(with_categories=true) %}
                 <div class="alert alert-{{ message[0] }}">{{ message[1] }}</div>
             {% endfor %}
@@ -363,6 +403,32 @@ TEMPLATES = {
                     {% endfor %}
                 </tbody>
             </table>
+        </div>
+    </body>
+    </html>
+    ''',
+    'broadcast.html': '''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>Broadcast - WARP Bot</title>
+        <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    </head>
+    <body>
+        <div class="container mt-5">
+            <h1>Рассылка пользователям</h1>
+            <a href="{{ url_for('index') }}" class="btn btn-secondary mb-3">Назад</a>
+            <a href="{{ url_for('logout') }}" class="btn btn-secondary mb-3">Выйти</a>
+            {% for message in get_flashed_messages(with_categories=true) %}
+                <div class="alert alert-{{ message[0] }}">{{ message[1] }}</div>
+            {% endfor %}
+            <form method="POST">
+                <div class="mb-3">
+                    <label for="message" class="form-label">Сообщение для рассылки</label>
+                    <textarea class="form-control" id="message" name="message" rows="5" required></textarea>
+                </div>
+                <button type="submit" class="btn btn-primary">Отправить рассылку</button>
+            </form>
         </div>
     </body>
     </html>
@@ -618,13 +684,14 @@ def run_flask():
 
 # Основная функция
 def main():
+    global application
+    # Запуск Telegram-бота
+    application = Application.builder().token(BOT_TOKEN).build()
+    
     # Запуск Flask в отдельном потоке
     flask_thread = threading.Thread(target=run_flask)
     flask_thread.daemon = True
     flask_thread.start()
-    
-    # Запуск Telegram-бота
-    application = Application.builder().token(BOT_TOKEN).build()
     
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
